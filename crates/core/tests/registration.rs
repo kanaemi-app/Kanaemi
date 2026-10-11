@@ -80,6 +80,19 @@ fn abc_mode_inside_registration_adds_letters_to_the_text() {
 }
 
 #[test]
+fn a_capital_letter_in_the_text_to_register_switches_to_abc_mode_and_is_typed_into_it() {
+    let mut t = T::new();
+    t.kana();
+    t.ch(';');
+    t.typ("nunu");
+    t.go_past_the_candidates();
+    t.typ("ka");
+    let out = t.ch('V');
+    assert_eq!(out.mode, Mode::Abc);
+    assert_eq!(t.typ("im").1.preedit, "»ぬぬ « かVim");
+}
+
+#[test]
 fn the_text_to_register_is_typed_by_the_bindings_of_its_mode() {
     let mut config = config();
     config

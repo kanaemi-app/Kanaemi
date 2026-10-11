@@ -145,6 +145,22 @@ pub fn Input() -> Element {
                 }
             }
         }
+        Group { title: "大文字",
+            Row {
+                label: "大文字で ABC モードへ",
+                description: "かなモードで大文字を打つと、ABC モードに切り替えてその大文字を打ちます。変換する読みの中では切り替えません。ローマ字の表が使う大文字と、機能を割り当てたキーは、そちらが働きます。",
+                path: path(&["keys", "abc_on_capital"]),
+                shipped: (config.abc_on_capital != shipped.abc_on_capital)
+                    .then(|| if shipped.abc_on_capital { "切り替える" } else { "切り替えない" }.to_owned()),
+                input {
+                    class: "switch",
+                    r#type: "checkbox",
+                    role: "switch",
+                    checked: config.abc_on_capital,
+                    onchange: move |e| ctx.change(&["keys", "abc_on_capital"], Some(e.checked().into())),
+                }
+            }
+        }
         Group {
             title: "変換中のショートカット",
             note: "変換中の文字があるときに、選んだキーとの組み合わせ（Cmd+C など）は、文字を確定してからアプリに送ります。選んでいないものは、変換中の文字をうっかり失わないよう、押しても何もしません。",

@@ -52,8 +52,13 @@ fn a_rule_can_take_uppercase_input() {
 }
 
 #[test]
-fn an_uppercase_letter_no_rule_takes_is_typed_as_it_is() {
-    assert_eq!(typed_with(romaji(), "Aka"), "Aか");
+fn an_uppercase_letter_no_rule_takes_is_typed_as_it_is_when_not_switching_to_abc_mode() {
+    let mut t = T::with_config(Config {
+        abc_on_capital: false,
+        ..config()
+    });
+    t.kana();
+    assert_eq!(t.typ("Aka").0, "Aか");
 }
 
 #[test]
@@ -325,7 +330,10 @@ fn an_n_left_outside_a_reading_is_still_n() {
 
 #[test]
 fn unfinished_romaji_is_kept_before_a_character_off_the_table_and_a_new_reading() {
-    let mut t = T::new();
+    let mut t = T::with_config(Config {
+        abc_on_capital: false,
+        ..config()
+    });
     t.kana();
     assert_eq!(t.typ("arewA").0, "あれwA");
 

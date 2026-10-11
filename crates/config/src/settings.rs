@@ -380,6 +380,12 @@ impl Reader<'_> {
             }
             return;
         }
+        if key == "abc_on_capital" {
+            return match value.as_bool() {
+                Some(switch) => self.settings.config.abc_on_capital = switch,
+                None => self.problem(item, ProblemKind::NotABool),
+            };
+        }
         let Value::Table(table) = value else {
             return self.problem(item, ProblemKind::NotATable);
         };
