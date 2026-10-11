@@ -2,9 +2,15 @@
 //! bindings of each scene, read and written together, so that a key is
 //! chosen once rather than once per scene.
 
-use kanaemi_config::{ApplicationTables, UNBOUND, bindings_table, format_action};
-use kanaemi_core::{Action, Bindings, Form};
+use std::collections::HashMap;
 
+use kanaemi_config::{
+    ApplicationTables, RegistrationTables, UNBOUND, bindings_table, format_action, parse_action,
+    parse_binding_key,
+};
+use kanaemi_core::{Action, Bindings, Form, Mode};
+
+use crate::registration::{self, ABC_SCENE, KANA_SCENE, Pressed};
 use crate::remaps::{self, Edit};
 
 /// One thing a key can do, and the scenes it is bound in to do it.
@@ -16,9 +22,9 @@ pub struct Intent {
     pub scenes: &'static [&'static str],
 }
 
-const COMPOSING: &[&str] = &["reading", "candidates", "registration"];
+const COMPOSING: &[&str] = &["reading", "candidates", KANA_SCENE, ABC_SCENE];
 const CONVERTING: &[&str] = &["reading", "candidates"];
-const EDITING: &[&str] = &["reading", "registration"];
+const EDITING: &[&str] = &["reading", KANA_SCENE, ABC_SCENE];
 const COMPLETION: &str = "completion";
 const COMPLETING: &[&str] = &["reading", COMPLETION, "candidates"];
 const LISTING: &[&str] = &[COMPLETION, "candidates"];
@@ -32,7 +38,7 @@ pub const GROUPS: &[(&str, &[Intent])] = &[
                 title: "読みを始める",
                 note: "読みの途中では送り仮名を始め、候補を選んでいるときは確定して次の読みを始めます",
                 action: Action::Begin,
-                scenes: &["kana", "reading", "candidates", "registration"],
+                scenes: &["kana", "reading", "candidates", KANA_SCENE, ABC_SCENE],
             },
             Intent {
                 title: "変換する・次の候補",
@@ -144,13 +150,13 @@ pub const GROUPS: &[(&str, &[Intent])] = &[
                 title: "ABC モードにする",
                 note: "打っている途中のものは確定してから切り替えます",
                 action: Action::Abc,
-                scenes: &["kana", "reading", "candidates", "registration"],
+                scenes: &["kana", "reading", "candidates", KANA_SCENE, ABC_SCENE],
             },
             Intent {
                 title: "かなモードにする",
                 note: "",
                 action: Action::Kana,
-                scenes: &["abc", "registration"],
+                scenes: &["abc", KANA_SCENE, ABC_SCENE],
             },
         ],
     ),
@@ -215,6 +221,54 @@ pub struct IntentKeys {
 /// A line to write: its table, its key, and its value, or `None` to take the
 /// line out so the default stands.
 pub type Change = (&'static str, String, Option<String>);
+
+/// The lines that make the settings file say what `changes` say. The text
+/// to register in each mode is written for the key once, in the table for
+/// both modes where they then do the same, so a key added in both is one
+/// line; a mode with no change for the key goes on doing what it does.
+pub fn edits(changes: &[Change], tables: &RegistrationTables) -> Vec<Edit> {
+    let mut edits = Vec::new();
+    let mut registering: Vec<(Pressed, Wanted)> = Vec::new();
+    for (scene, key, value) in changes {
+        let (Some(mode), Some(pressed)) = (registration::mode_of(scene), parse_binding_key(key))
+        else {
+            let path = ["keys"]
+                .into_iter()
+                .chain(scene.split('.'))
+                .chain([key.as_str()])
+                .map(str::to_owned)
+                .collect();
+            edits.push((path, value.clone()));
+            continue;
+        };
+        let action = match value.as_deref() {
+            None => registration::default_action(mode, pressed),
+            Some(UNBOUND) => None,
+            // Every intent's action is one the settings file names.
+            Some(value) => parse_action(value),
+        };
+        let at = match registering.iter().position(|(p, _)| *p == pressed) {
+            Some(at) => at,
+            None => {
+                registering.push((pressed, Wanted::new()));
+                registering.len() - 1
+            }
+        };
+        registering[at].1.insert(mode, action);
+    }
+    for (pressed, wanted) in registering {
+        edits.extend(registration::writing(tables, pressed, |mode| {
+            wanted
+                .get(&mode)
+                .copied()
+                .unwrap_or_else(|| registration::action(tables, mode, pressed))
+        }));
+    }
+    edits
+}
+
+/// What each mode is to do for a key while the text to register is typed.
+type Wanted = HashMap<Mode, Option<Action>>;
 
 fn bound(bindings: &Bindings, scene: &str, key: &str) -> Option<String> {
     bindings_table(bindings, scene)
@@ -386,7 +440,7 @@ pub fn send(on: bool, tables: &ApplicationTables) -> Vec<Edit> {
 mod tests {
     use std::path::Path;
 
-    use kanaemi_config::Settings;
+    use kanaemi_config::{REGISTRATION_TABLE, Settings};
     use kanaemi_core::Gesture;
 
     use super::*;
@@ -402,28 +456,13 @@ mod tests {
 
     /// The bindings a settings file with `changes` written reads as.
     fn written(changes: &[Change]) -> Bindings {
-        let mut text = String::new();
-        for scene in [
-            "kana",
-            "abc",
-            "reading",
-            "completion",
-            "candidates",
-            "registration",
-            "application",
-        ] {
-            text.push_str(&format!("[keys.{scene}]\n"));
-            for (s, key, value) in changes {
-                if *s == scene
-                    && let Some(value) = value
-                {
-                    text.push_str(&format!("{key:?} = {value:?}\n"));
-                }
-            }
-        }
-        let (settings, problems) = Settings::load(&text, Path::new("/nonexistent"));
-        assert_eq!(problems, Vec::new(), "{text}");
-        settings.config.bindings
+        loaded(&edited("", &edits(changes, &RegistrationTables::default())))
+            .config
+            .bindings
+    }
+
+    fn path(segments: &[&str]) -> Vec<String> {
+        segments.iter().map(|s| (*s).to_owned()).collect()
     }
 
     #[test]
@@ -589,7 +628,8 @@ mod tests {
             })
         };
         assert!(held(&bindings.kana) && held(&bindings.reading));
-        assert!(held(&bindings.candidates) && held(&bindings.registration));
+        assert!(held(&bindings.candidates));
+        assert!(held(&bindings.registration_kana) && held(&bindings.registration_abc));
     }
 
     #[test]
@@ -649,8 +689,122 @@ mod tests {
         assert!(begin().changed(&bindings, &shipped));
         let reset = begin().resetting(&bindings, &shipped);
         assert!(reset.iter().all(|(_, _, value)| value.is_none()));
-        assert_eq!(reset.len(), 8, "; and space#hold in each of four scenes");
+        assert_eq!(reset.len(), 10, "; and space#hold in each of five scenes");
         assert!(!begin().changed(&shipped, &shipped));
+    }
+
+    #[test]
+    fn a_key_added_while_registering_is_one_line_for_both_modes() {
+        let shipped = Bindings::default();
+        let changes = begin().adding("q", &shipped, &shipped);
+
+        let edits = edits(&changes, &RegistrationTables::default());
+
+        let registering: Vec<&Edit> = edits
+            .iter()
+            .filter(|(at, _)| at[1] == REGISTRATION_TABLE)
+            .collect();
+        assert_eq!(
+            registering,
+            [&(
+                path(&["keys", "registration", "q"]),
+                Some("@begin".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_key_bound_in_one_registration_mode_is_written_in_its_table() {
+        let changes = [(ABC_SCENE, "q".to_owned(), Some("@begin".to_owned()))];
+
+        let edits = edits(&changes, &RegistrationTables::default());
+
+        assert_eq!(
+            edits,
+            [(
+                path(&["keys", "registration", "abc-mode", "q"]),
+                Some("@begin".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_line_of_another_scene_is_written_in_its_table() {
+        let changes = [
+            ("reading", ".".to_owned(), Some("@begin".to_owned())),
+            ("kana", ";".to_owned(), None),
+        ];
+
+        let edits = edits(&changes, &RegistrationTables::default());
+
+        assert_eq!(
+            edits,
+            [
+                (path(&["keys", "reading", "."]), Some("@begin".to_owned())),
+                (path(&["keys", "kana", ";"]), None),
+            ]
+        );
+    }
+
+    #[test]
+    fn a_key_the_file_cannot_read_is_written_as_it_is_for_the_file_to_refuse() {
+        let changes = [(KANA_SCENE, "nowhere".to_owned(), Some("@begin".to_owned()))];
+
+        let edits = edits(&changes, &RegistrationTables::default());
+
+        assert_eq!(
+            edits,
+            [(
+                path(&["keys", "registration", "kana-mode", "nowhere"]),
+                Some("@begin".to_owned())
+            )]
+        );
+    }
+
+    #[test]
+    fn a_key_added_works_in_both_modes_while_a_mode_table_binds_it_otherwise() {
+        let text = "[keys.registration.kana-mode]\nq = \"@cancel\"\n";
+        let settings = loaded(text);
+        let current = settings.config.bindings;
+        let shipped = Bindings::default();
+        let changes = begin().adding("q", &current, &shipped);
+
+        let after = loaded(&edited(
+            text,
+            &edits(&changes, &settings.registration_tables),
+        ));
+
+        assert!(
+            begin()
+                .keys(&after.config.bindings)
+                .everywhere
+                .contains(&"q".to_owned())
+        );
+    }
+
+    #[test]
+    fn a_key_taken_off_goes_from_both_modes_whichever_table_binds_it() {
+        let text = "[keys.registration]\n\"ctrl+o\" = \"@begin\"\n\
+                    [keys.registration.abc-mode]\n\"ctrl+o\" = \"@commit\"\n\
+                    [keys.registration.kana-mode]\n\"ctrl+k\" = \"@begin\"\n";
+        let settings = loaded(text);
+        let current = settings.config.bindings;
+        let shipped = Bindings::default();
+        let mut changes = begin().removing("ctrl+o", &current, &shipped);
+        changes.extend(begin().removing("ctrl+k", &current, &shipped));
+
+        let after = loaded(&edited(
+            text,
+            &edits(&changes, &settings.registration_tables),
+        ));
+
+        let keys = begin().keys(&after.config.bindings);
+        assert!(keys.somewhere.is_empty(), "{keys:?}");
+        assert_eq!(
+            bound(&after.config.bindings, ABC_SCENE, "ctrl+o").as_deref(),
+            Some("@commit"),
+            "bound to something else there, it stays so"
+        );
     }
 
     fn loaded(text: &str) -> Settings {

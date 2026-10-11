@@ -1,6 +1,6 @@
 //! How the settings file names keys, actions and the bindings tables.
 
-use kanaemi_core::{Action, Binding, Bindings, Chord, Form, Gesture, Key, Modifiers, Os};
+use kanaemi_core::{Action, Binding, Bindings, Chord, Form, Gesture, Key, Mode, Modifiers, Os};
 
 /// Takes a binding out.
 pub const UNBOUND: &str = "@none";
@@ -18,6 +18,22 @@ pub fn os_table(os: Os) -> &'static str {
     }
 }
 
+/// The bindings table of the text to register, holding a table for each
+/// mode written over it.
+pub const REGISTRATION_TABLE: &str = "registration";
+
+/// The table inside the registration table that binds keys in `mode` only.
+/// Named apart from the keys, so that the かな key is bound beside it.
+pub fn mode_table(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Kana => "kana-mode",
+        Mode::Abc => "abc-mode",
+    }
+}
+
+/// The modes the text to register is typed in.
+pub(crate) const MODES: [Mode; 2] = [Mode::Kana, Mode::Abc];
+
 /// How many candidates `@select-N` can pick, each by its place on a page.
 const PICKABLE: u8 = 9;
 
@@ -27,30 +43,35 @@ pub(crate) enum Scene {
     Reading,
     Completion,
     Candidates,
-    Registration,
+    /// The text to register being typed: in a mode, or in either.
+    Registration(Option<Mode>),
     Kana,
     Abc,
 }
 
 impl Scene {
-    const ALL: [Scene; 6] = [
+    const ALL: [Scene; 8] = [
         Self::Reading,
         Self::Completion,
         Self::Candidates,
-        Self::Registration,
+        Self::Registration(None),
+        Self::Registration(Some(Mode::Kana)),
+        Self::Registration(Some(Mode::Abc)),
         Self::Kana,
         Self::Abc,
     ];
 
-    /// The name of its table under `[keys]`.
-    const fn name(self) -> &'static str {
+    /// Its table under `[keys]`, a table of the registration table by its
+    /// path from there.
+    fn name(self) -> String {
         match self {
-            Self::Reading => "reading",
-            Self::Completion => "completion",
-            Self::Candidates => "candidates",
-            Self::Registration => "registration",
-            Self::Kana => "kana",
-            Self::Abc => "abc",
+            Self::Reading => "reading".to_owned(),
+            Self::Completion => "completion".to_owned(),
+            Self::Candidates => "candidates".to_owned(),
+            Self::Registration(None) => REGISTRATION_TABLE.to_owned(),
+            Self::Registration(Some(mode)) => format!("{REGISTRATION_TABLE}.{}", mode_table(mode)),
+            Self::Kana => "kana".to_owned(),
+            Self::Abc => "abc".to_owned(),
         }
     }
 
@@ -71,7 +92,7 @@ impl Scene {
                 action,
                 Delete | Left | Right | Home | End | UndoCommit | RereadKana
             ),
-            Self::Registration => matches!(
+            Self::Registration(_) => matches!(
                 action,
                 Commit
                     | Cancel
@@ -90,54 +111,78 @@ impl Scene {
         }
     }
 
-    pub(crate) fn bindings(self, bindings: &Bindings) -> &Vec<Binding> {
+    /// Its bindings; in either mode of the registration, those of both
+    /// alike.
+    fn bindings(self, bindings: &Bindings) -> Vec<Binding> {
         match self {
-            Self::Reading => &bindings.reading,
-            Self::Completion => &bindings.completion,
-            Self::Candidates => &bindings.candidates,
-            Self::Registration => &bindings.registration,
-            Self::Kana => &bindings.kana,
-            Self::Abc => &bindings.abc,
+            Self::Reading => bindings.reading.clone(),
+            Self::Completion => bindings.completion.clone(),
+            Self::Candidates => bindings.candidates.clone(),
+            Self::Registration(Some(Mode::Kana)) => bindings.registration_kana.clone(),
+            Self::Registration(Some(Mode::Abc)) => bindings.registration_abc.clone(),
+            Self::Registration(None) => bindings
+                .registration_kana
+                .iter()
+                .filter(|b| bindings.registration_abc.contains(b))
+                .copied()
+                .collect(),
+            Self::Kana => bindings.kana.clone(),
+            Self::Abc => bindings.abc.clone(),
         }
     }
 
-    pub(crate) fn bindings_mut(self, bindings: &mut Bindings) -> &mut Vec<Binding> {
+    /// Its bindings, those of each mode the registration's are written in.
+    pub(crate) fn bindings_mut(self, bindings: &mut Bindings) -> Vec<&mut Vec<Binding>> {
         match self {
-            Self::Reading => &mut bindings.reading,
-            Self::Completion => &mut bindings.completion,
-            Self::Candidates => &mut bindings.candidates,
-            Self::Registration => &mut bindings.registration,
-            Self::Kana => &mut bindings.kana,
-            Self::Abc => &mut bindings.abc,
+            Self::Reading => vec![&mut bindings.reading],
+            Self::Completion => vec![&mut bindings.completion],
+            Self::Candidates => vec![&mut bindings.candidates],
+            Self::Registration(Some(Mode::Kana)) => vec![&mut bindings.registration_kana],
+            Self::Registration(Some(Mode::Abc)) => vec![&mut bindings.registration_abc],
+            Self::Registration(None) => {
+                vec![
+                    &mut bindings.registration_kana,
+                    &mut bindings.registration_abc,
+                ]
+            }
+            Self::Kana => vec![&mut bindings.kana],
+            Self::Abc => vec![&mut bindings.abc],
         }
     }
 }
 
 /// Every bindings table under `[keys]`: each scene's, then the application's.
-pub fn binding_tables() -> Vec<&'static str> {
+/// A table inside another is named by its path from `[keys]`.
+pub fn binding_tables() -> Vec<String> {
     Scene::ALL
         .into_iter()
         .map(Scene::name)
-        .chain([APPLICATION_TABLE])
+        .chain([APPLICATION_TABLE.to_owned()])
         .collect()
 }
 
+/// A key of a scene's bindings table, pressed so, as the settings file
+/// writes it.
+pub fn format_binding_key(chord: Chord, gesture: Gesture) -> Option<String> {
+    let mut from = format_chord(chord)?;
+    match gesture {
+        Gesture::Press => {}
+        Gesture::Tap => from.push_str(TAP),
+        Gesture::Hold => from.push_str(HOLD),
+    }
+    Some(from)
+}
+
 /// The bindings of `table` as the settings file writes them, as (pressed key,
-/// action or key sent). Empty for a table that does not exist.
+/// action or key sent). Empty for a table that does not exist. The
+/// registration table has what both its modes bind alike, and each mode's
+/// table what that mode binds.
 pub fn bindings_table(bindings: &Bindings, table: &str) -> Vec<(String, String)> {
     match Scene::named(table) {
         Some(scene) => scene
             .bindings(bindings)
             .iter()
-            .filter_map(|b| {
-                let mut from = format_chord(b.from)?;
-                match b.gesture {
-                    Gesture::Press => {}
-                    Gesture::Tap => from.push_str(TAP),
-                    Gesture::Hold => from.push_str(HOLD),
-                }
-                Some((from, format_action(b.to)))
-            })
+            .filter_map(|b| Some((format_binding_key(b.from, b.gesture)?, format_action(b.to))))
             .collect(),
         None if table == APPLICATION_TABLE => bindings
             .application
@@ -150,8 +195,8 @@ pub fn bindings_table(bindings: &Bindings, table: &str) -> Vec<(String, String)>
 
 /// What a key can be bound to in the scene table `table`, in the order to
 /// list them; none for the application table, which sends keys instead.
-pub fn actions(table: &str) -> Vec<Action> {
-    let Some(scene) = Scene::named(table) else {
+pub fn actions(table: impl AsRef<str>) -> Vec<Action> {
+    let Some(scene) = Scene::named(table.as_ref()) else {
         return Vec::new();
     };
     every_action()

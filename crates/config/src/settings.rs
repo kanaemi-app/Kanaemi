@@ -7,15 +7,17 @@
 use std::collections::HashMap;
 use std::path::Path;
 
-use kanaemi_core::{Binding, Chord, Config, Modifiers, Os, Remap, RomajiTable};
+use kanaemi_core::{
+    Action, Binding, Bindings, Chord, Config, Gesture, Mode, Modifiers, Os, Remap, RomajiTable,
+};
 use toml::{Table, Value};
 
 use crate::folder::stays_inside;
-use crate::keys::{Scene, is_modifier, sendable};
+use crate::keys::{MODES, Scene, is_modifier, sendable};
 use crate::{
-    APPLICATION_TABLE, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FILE_NAME, UNBOUND,
-    builtin_dictionary, default_romaji_table, os_table, parse_action, parse_binding_key,
-    parse_chord, read_romaji_table,
+    APPLICATION_TABLE, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FILE_NAME,
+    REGISTRATION_TABLE, UNBOUND, builtin_dictionary, default_romaji_table, mode_table, os_table,
+    parse_action, parse_binding_key, parse_chord, read_romaji_table,
 };
 
 /// The name the dictionary list gives the user custom dictionary.
@@ -38,6 +40,23 @@ pub struct Settings {
     /// OS's alike, where [`Config::bindings`] has only what the running OS
     /// sends.
     pub application_tables: ApplicationTables,
+    /// What the registration table and the mode tables inside it write,
+    /// where [`Config::bindings`] has what each mode binds.
+    pub registration_tables: RegistrationTables,
+}
+
+/// A line of a scene's bindings table: the key, how it is pressed, and its
+/// action, or `None` where the line takes the binding out.
+pub type BindingLine = (Chord, Gesture, Option<Action>);
+
+/// What the registration table and its mode tables write, as written: each
+/// key that can be read, pressed so, once.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RegistrationTables {
+    /// The table for both modes.
+    pub shared: Vec<BindingLine>,
+    /// The table of each mode that writes one, written over the shared one.
+    pub modes: HashMap<Mode, Vec<BindingLine>>,
 }
 
 /// What the application table and its OS tables write, as written: each key
@@ -145,6 +164,7 @@ impl Settings {
                 control_port: None,
                 disabled_functions: Vec::new(),
                 application_tables: ApplicationTables::default(),
+                registration_tables: RegistrationTables::default(),
             },
             problems: Vec::new(),
             dir: dir.as_ref(),
@@ -366,39 +386,95 @@ impl Reader<'_> {
         if key == APPLICATION_TABLE {
             return self.application(item, table);
         }
-        let Some(scene) = Scene::named(key) else {
+        if key == REGISTRATION_TABLE {
+            return self.registration(item, table);
+        }
+        // A mode table is read inside the registration table only, so that
+        // the tables kept as written hold every line that binds a key.
+        let Some(scene) = Scene::named(key).filter(|s| !matches!(s, Scene::Registration(_))) else {
             return self.problem(item, ProblemKind::UnknownItem);
         };
         for (written, to) in table {
             let at = format!("{item}.{written}");
-            let Some(to) = to.as_str() else {
-                self.problem(at, ProblemKind::NotAString);
-                continue;
-            };
-            let Some((from, gesture)) = parse_binding_key(&written) else {
-                self.problem(at, ProblemKind::UnknownKey(written));
-                continue;
-            };
-            let to = match to {
-                UNBOUND => None,
-                to => match parse_action(to) {
-                    Some(action) if scene.allows(action) => Some(action),
-                    Some(_) => {
-                        self.problem(at, ProblemKind::ActionNotHere(to.to_owned()));
-                        continue;
-                    }
-                    None => {
-                        self.problem(at, ProblemKind::UnknownAction(to.to_owned()));
-                        continue;
-                    }
-                },
-            };
-            let bindings = scene.bindings_mut(&mut self.settings.config.bindings);
-            bindings.retain(|b| (b.from, b.gesture) != (from, gesture));
-            if let Some(to) = to {
-                bindings.push(Binding { from, gesture, to });
+            if let Some(line) = self.binding(&at, scene, written, &to) {
+                bind(&mut self.settings.config.bindings, scene, line);
             }
         }
+    }
+
+    /// Every table kept as written, and the registration table's bindings
+    /// in both modes, then each mode's table over them in that mode, whatever
+    /// order the file writes them in.
+    fn registration(&mut self, item: &str, table: Table) {
+        let mut tables = RegistrationTables::default();
+        for (written, to) in table {
+            let at = format!("{item}.{written}");
+            let Value::Table(table) = to else {
+                let shared = Scene::Registration(None);
+                if let Some(line) = self.binding(&at, shared, written, &to) {
+                    write_binding(&mut tables.shared, line);
+                }
+                continue;
+            };
+            let Some(mode) = MODES.into_iter().find(|mode| mode_table(*mode) == written) else {
+                self.problem(at, ProblemKind::UnknownItem);
+                continue;
+            };
+            let lines = tables.modes.entry(mode).or_default();
+            for (written, to) in table {
+                let at = format!("{at}.{written}");
+                if let Some(line) = self.binding(&at, Scene::Registration(Some(mode)), written, &to)
+                {
+                    write_binding(lines, line);
+                }
+            }
+        }
+        tables.modes.retain(|_, lines| !lines.is_empty());
+        let bindings = &mut self.settings.config.bindings;
+        for &line in &tables.shared {
+            bind(bindings, Scene::Registration(None), line);
+        }
+        for (&mode, lines) in &tables.modes {
+            for &line in lines {
+                bind(bindings, Scene::Registration(Some(mode)), line);
+            }
+        }
+        self.settings.registration_tables = tables;
+    }
+
+    /// The key a line of `scene`'s table binds, pressed so, and its action,
+    /// `None` to take the binding out; reported at `at` when it cannot be
+    /// read.
+    fn binding(
+        &mut self,
+        at: &str,
+        scene: Scene,
+        written: String,
+        to: &Value,
+    ) -> Option<BindingLine> {
+        let Some(to) = to.as_str() else {
+            self.problem(at, ProblemKind::NotAString);
+            return None;
+        };
+        let Some((from, gesture)) = parse_binding_key(&written) else {
+            self.problem(at, ProblemKind::UnknownKey(written));
+            return None;
+        };
+        let to = match to {
+            UNBOUND => None,
+            to => match parse_action(to) {
+                Some(action) if scene.allows(action) => Some(action),
+                Some(_) => {
+                    self.problem(at, ProblemKind::ActionNotHere(to.to_owned()));
+                    return None;
+                }
+                None => {
+                    self.problem(at, ProblemKind::UnknownAction(to.to_owned()));
+                    return None;
+                }
+            },
+        };
+        Some((from, gesture, to))
     }
 
     /// Every table kept as written, and the shared remaps, then those of the
@@ -480,4 +556,21 @@ impl Reader<'_> {
 fn write(entries: &mut Vec<(Chord, Option<Chord>)>, from: Chord, to: Option<Chord>) {
     entries.retain(|(f, _)| *f != from);
     entries.push((from, to));
+}
+
+/// Writes a binding into a table, in place of a line for the same key,
+/// pressed so, written another way before it.
+fn write_binding(lines: &mut Vec<BindingLine>, line: BindingLine) {
+    lines.retain(|(from, gesture, _)| (*from, *gesture) != (line.0, line.1));
+    lines.push(line);
+}
+
+/// Binds a key in `scene` as a line of its table says.
+fn bind(bindings: &mut Bindings, scene: Scene, (from, gesture, to): BindingLine) {
+    for bindings in scene.bindings_mut(bindings) {
+        bindings.retain(|b| (b.from, b.gesture) != (from, gesture));
+        if let Some(to) = to {
+            bindings.push(Binding { from, gesture, to });
+        }
+    }
 }

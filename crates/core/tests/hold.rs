@@ -13,7 +13,8 @@ fn unheld() -> Config {
         &mut bindings.abc,
         &mut bindings.reading,
         &mut bindings.candidates,
-        &mut bindings.registration,
+        &mut bindings.registration_kana,
+        &mut bindings.registration_abc,
     ] {
         scene.retain(|b| b.gesture != Gesture::Hold);
     }
@@ -370,7 +371,7 @@ fn letters_typed_while_space_is_held_are_the_letters_each_after_begin() {
 #[test]
 fn space_held_types_nothing_of_its_own_in_text_registered_in_abc_mode() {
     let mut config = common::config();
-    config.bindings.registration.push(Binding {
+    config.bindings.registration_abc.push(Binding {
         from: plain(Key::Space),
         gesture: Gesture::Hold,
         to: Action::Begin,

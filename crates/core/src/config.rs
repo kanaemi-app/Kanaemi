@@ -1,4 +1,4 @@
-use crate::{Key, Modifiers, RomajiTable};
+use crate::{Key, Mode, Modifiers, RomajiTable};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Config {
@@ -137,8 +137,8 @@ pub(crate) enum Scene {
     /// A reading while the readings it is completed with are listed.
     Completion,
     Candidates,
-    /// The text to register being typed.
-    Registration,
+    /// The text to register being typed, in a mode.
+    Registration(Mode),
     /// Kana mode with nothing typed.
     Kana,
     /// ABC mode with nothing typed.
@@ -256,8 +256,10 @@ pub struct Bindings {
     /// bound nowhere here does what it does in a reading.
     pub completion: Vec<Binding>,
     pub candidates: Vec<Binding>,
-    /// While typing the text to register.
-    pub registration: Vec<Binding>,
+    /// While typing the text to register in kana mode.
+    pub registration_kana: Vec<Binding>,
+    /// While typing the text to register in ABC mode.
+    pub registration_abc: Vec<Binding>,
     /// In kana mode with nothing typed. Of the characters only `;` is bound
     /// by default, to begin: some romaji tables use every letter.
     pub kana: Vec<Binding>,
@@ -276,7 +278,8 @@ impl Bindings {
             Scene::Reading => &self.reading,
             Scene::Completion => &self.completion,
             Scene::Candidates => &self.candidates,
-            Scene::Registration => &self.registration,
+            Scene::Registration(Mode::Kana) => &self.registration_kana,
+            Scene::Registration(Mode::Abc) => &self.registration_abc,
             Scene::Kana => &self.kana,
             Scene::Abc => &self.abc,
         }
@@ -289,7 +292,8 @@ impl Bindings {
             &self.reading,
             &self.completion,
             &self.candidates,
-            &self.registration,
+            &self.registration_kana,
+            &self.registration_abc,
             &self.kana,
             &self.abc,
         ]
@@ -394,6 +398,18 @@ impl Default for Bindings {
             key(Key::Tab, plain, Complete),
             key(Key::Tab, shift, CompletePrevious),
         ];
+        // In the text to register, ABC mode types letters into it and kana
+        // mode comes back to kana.
+        let registration = [
+            &deciding[..],
+            &editing,
+            &to_abc,
+            &[off],
+            &to_kana,
+            &[on],
+            &[begin],
+        ]
+        .concat();
         let picking: Vec<Binding> = (0..PAGE_LEN as u8)
             .map(|n| key(Key::Char(char::from(b'1' + n)), plain, Pick(n)))
             .collect();
@@ -439,18 +455,8 @@ impl Default for Bindings {
                 &[begin],
             ]
             .concat(),
-            // In the text to register, ABC mode types letters into it and kana
-            // mode comes back to kana.
-            registration: [
-                &deciding[..],
-                &editing,
-                &to_abc,
-                &[off],
-                &to_kana,
-                &[on],
-                &[begin],
-            ]
-            .concat(),
+            registration_kana: registration.clone(),
+            registration_abc: registration,
             // With nothing to undo, Shift+Backspace passes on and deletes a
             // character in most applications, where other keys bound by
             // other IMEs reload a page (Ctrl+Shift+R) or delete a word

@@ -6,13 +6,13 @@ use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
 
 use kanaemi_config::{
-    APPLICATION_TABLE, ApplicationTables, DictionarySource, FILE_NAME, ProblemKind, Settings,
-    TEMPLATE, UNBOUND, actions, binding_tables, bindings_table, default_romaji_table,
-    format_action, key_names, os_table, parse_action, parse_binding_key, parse_chord,
-    read_or_create, read_romaji_table, sendable_keys,
+    APPLICATION_TABLE, ApplicationTables, DictionarySource, FILE_NAME, ProblemKind,
+    RegistrationTables, Settings, TEMPLATE, UNBOUND, actions, binding_tables, bindings_table,
+    default_romaji_table, format_action, key_names, mode_table, os_table, parse_action,
+    parse_binding_key, parse_chord, read_or_create, read_romaji_table, sendable_keys,
 };
 use kanaemi_core::{
-    Action, Binding, Chord, Config, Gesture, Key, Modifiers, Os, Remap, RomajiTable,
+    Action, Binding, Chord, Config, Gesture, Key, Mode, Modifiers, Os, Remap, RomajiTable,
 };
 
 fn load(text: &str) -> (Settings, Vec<String>) {
@@ -552,6 +552,148 @@ fn nothing_written_leaves_every_table_empty() {
     let (settings, _) = load("");
 
     assert_eq!(settings.application_tables, ApplicationTables::default());
+    assert_eq!(settings.registration_tables, RegistrationTables::default());
+}
+
+/// A mode table written before the registration table it goes over.
+const WRITTEN_FOR_A_MODE: &str = "[keys.registration.abc-mode]\n\"ctrl+k\" = \"@cancel\"\n\"enter\" = \"@none\"\n\
+     [keys.registration]\n\"ctrl+k\" = \"@commit\"\n\"ctrl+j\" = \"@cancel\"\n";
+
+#[test]
+fn the_table_of_a_mode_is_written_over_the_registration_table_in_that_mode_only() {
+    let (settings, problems) = load(WRITTEN_FOR_A_MODE);
+
+    assert_eq!(problems, Vec::<String>::new());
+    let bindings = &settings.config.bindings;
+    let kana = &bindings.registration_kana;
+    assert_eq!(target(kana, ctrl('k')), Some(Action::Commit));
+    assert_eq!(target(kana, ctrl('j')), Some(Action::Cancel));
+    assert_eq!(target(kana, plain(Key::Enter)), Some(Action::Commit));
+    let abc = &bindings.registration_abc;
+    assert_eq!(target(abc, ctrl('k')), Some(Action::Cancel));
+    assert_eq!(target(abc, ctrl('j')), Some(Action::Cancel));
+    assert_eq!(
+        target(abc, plain(Key::Enter)),
+        None,
+        "taken off in ABC mode"
+    );
+}
+
+#[test]
+fn the_registration_tables_are_kept_as_they_are_written() {
+    let (settings, _) = load(WRITTEN_FOR_A_MODE);
+
+    let press = |chord, to| (chord, Gesture::Press, to);
+    assert_eq!(
+        settings.registration_tables,
+        RegistrationTables {
+            shared: vec![
+                press(ctrl('k'), Some(Action::Commit)),
+                press(ctrl('j'), Some(Action::Cancel)),
+            ],
+            modes: HashMap::from([(
+                Mode::Abc,
+                vec![
+                    press(ctrl('k'), Some(Action::Cancel)),
+                    press(plain(Key::Enter), None),
+                ]
+            )]),
+        }
+    );
+}
+
+#[test]
+fn the_kana_key_is_bound_in_the_registration_table_beside_the_table_of_kana_mode() {
+    let (settings, problems) = load(&format!(
+        "[keys.registration]\nkana = \"@none\"\n[keys.registration.{}]\n\"ctrl+k\" = \"@commit\"\n",
+        mode_table(Mode::Kana)
+    ));
+
+    assert_eq!(problems, Vec::<String>::new());
+    let bindings = &settings.config.bindings;
+    for scene in [&bindings.registration_kana, &bindings.registration_abc] {
+        assert_eq!(target(scene, plain(Key::Kana)), None);
+    }
+    assert_eq!(
+        target(&bindings.registration_kana, ctrl('k')),
+        Some(Action::Commit)
+    );
+}
+
+#[test]
+fn only_a_mode_names_a_table_inside_the_registration_table() {
+    let (settings, problems) = Settings::load(
+        "[keys.registration.kana]\n\"ctrl+k\" = \"@commit\"\n\
+         [keys.registration.abc-mode]\n\"tab\" = \"@complete\"\n\"ctrl+j\" = 1\n\"ctrl+k\" = \"@commit\"\n",
+        Path::new("/nonexistent"),
+    );
+
+    let problems: Vec<_> = problems.into_iter().map(|p| (p.item, p.kind)).collect();
+    assert_eq!(
+        problems,
+        [
+            (
+                "keys.registration.kana".to_owned(),
+                ProblemKind::UnknownItem
+            ),
+            (
+                "keys.registration.abc-mode.tab".to_owned(),
+                ProblemKind::ActionNotHere("@complete".to_owned())
+            ),
+            (
+                "keys.registration.abc-mode.ctrl+j".to_owned(),
+                ProblemKind::NotAString
+            ),
+        ]
+    );
+    assert_eq!(
+        settings.registration_tables.modes[&Mode::Abc],
+        [(ctrl('k'), Gesture::Press, Some(Action::Commit))],
+        "only what can be read is kept"
+    );
+}
+
+#[test]
+fn a_mode_table_is_only_read_inside_the_registration_table() {
+    let (settings, problems) = load("[keys.\"registration.abc-mode\"]\nenter = \"@cancel\"\n");
+
+    assert_eq!(problems, ["keys.registration.abc-mode"]);
+    assert_eq!(
+        target(
+            &settings.config.bindings.registration_abc,
+            plain(Key::Enter)
+        ),
+        Some(Action::Commit)
+    );
+}
+
+#[test]
+fn the_registration_table_lists_what_both_modes_bind_alike() {
+    let (settings, _) = load(WRITTEN_FOR_A_MODE);
+    let bindings = &settings.config.bindings;
+
+    let shared = bindings_table(bindings, "registration");
+    let abc = bindings_table(bindings, &format!("registration.{}", mode_table(Mode::Abc)));
+
+    let line = |key: &str, to: &str| (key.to_owned(), to.to_owned());
+    assert!(shared.contains(&line("ctrl+j", "@cancel")));
+    assert!(
+        !shared
+            .iter()
+            .any(|(key, _)| key == "ctrl+k" || key == "enter")
+    );
+    assert!(abc.contains(&line("ctrl+k", "@cancel")));
+    assert!(!abc.iter().any(|(key, _)| key == "enter"));
+}
+
+#[test]
+fn the_template_shows_a_table_for_each_mode_of_the_registration() {
+    for mode in [Mode::Kana, Mode::Abc].map(mode_table) {
+        assert!(
+            TEMPLATE.contains(&format!("#[keys.registration.{mode}]")),
+            "{mode}"
+        );
+    }
 }
 
 #[test]
@@ -884,7 +1026,8 @@ fn begin_is_bound_to_semicolon_where_a_reading_can_be_started_or_marked() {
         ("kana", &bindings.kana),
         ("reading", &bindings.reading),
         ("candidates", &bindings.candidates),
-        ("registration", &bindings.registration),
+        ("registration in kana mode", &bindings.registration_kana),
+        ("registration in ABC mode", &bindings.registration_abc),
     ] {
         assert_eq!(
             target(scene, plain(Key::Char(';'))),
@@ -1117,6 +1260,9 @@ const PLACES: &[(&str, &[&str])] = &[
     ("keys.completion", BINDING_KEYS),
     ("keys.candidates", BINDING_KEYS),
     ("keys.registration", BINDING_KEYS),
+    ("keys.registration.kana-mode", BINDING_KEYS),
+    ("keys.registration.abc-mode", BINDING_KEYS),
+    ("keys.registration.unknown", BINDING_KEYS),
     ("keys.abc", BINDING_KEYS),
     ("keys.application", BINDING_KEYS),
     ("keys.application.macos", BINDING_KEYS),

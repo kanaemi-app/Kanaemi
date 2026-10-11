@@ -1,6 +1,6 @@
 use crate::{Candidate, Chord};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 /// The input mode the user switches between. A reading and its candidates
 /// are typed in kana mode; the text to register can be typed in either.
 pub enum Mode {

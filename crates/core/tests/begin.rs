@@ -260,7 +260,7 @@ fn ctrl_semicolon() -> Chord {
 fn a_begin_shortcut_on_an_empty_reading_in_a_registration_only_leaves_the_reading() {
     let mut config = config();
     for scene in [
-        &mut config.bindings.registration,
+        &mut config.bindings.registration_kana,
         &mut config.bindings.reading,
     ] {
         // In place of the key's own binding, as the settings file binds it.

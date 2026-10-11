@@ -693,7 +693,7 @@ impl<C: Converter> Core<C> {
         }
         match &self.state {
             State::Candidates(_) => Scene::Candidates,
-            State::Idle { .. } if !self.registrations.is_empty() => Scene::Registration,
+            State::Idle { .. } if !self.registrations.is_empty() => Scene::Registration(self.mode),
             State::Reading(_) if self.listing_completion() => Scene::Completion,
             _ => Scene::Reading,
         }
