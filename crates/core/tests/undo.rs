@@ -170,6 +170,15 @@ fn nothing_changes_when_the_host_could_not_erase() {
 }
 
 #[test]
+fn letters_typed_after_switching_to_abc_mode_while_waiting_to_erase_are_still_typed() {
+    let mut t = committed();
+    undo(&mut t);
+    t.typ("Vim");
+    let out = t.handle(Event::Erased(false));
+    assert_eq!((out.commit.as_deref(), out.mode), (Some("Vim"), Mode::Abc));
+}
+
+#[test]
 fn a_commit_undone_as_the_mode_leaves_kana_goes_back_as_it_was() {
     let mut t = committed();
     t.typ("suru");

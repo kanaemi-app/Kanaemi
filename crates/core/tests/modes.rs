@@ -1,7 +1,9 @@
 mod common;
 
 use common::*;
-use kanaemi_core::{Config, Event, Key, KeyEvent, KeyKind, Mode, Modifiers};
+use kanaemi_core::{
+    Action, Binding, Chord, Config, Event, Gesture, Key, KeyEvent, KeyKind, Mode, Modifiers,
+};
 
 #[test]
 fn the_same_events_give_the_same_outputs() {
@@ -94,11 +96,67 @@ fn pending_romaji_is_shown_until_it_completes() {
 }
 
 #[test]
-fn an_uppercase_letter_in_kana_mode_is_typed_through_the_romaji_table_like_any_other() {
+fn a_capital_letter_in_kana_mode_switches_to_abc_mode_and_is_typed() {
     let mut t = T::new();
+    t.kana();
+    let out = t.ch('K');
+    assert_eq!((out.commit.as_deref(), out.mode), (Some("K"), Mode::Abc));
+    assert_eq!(out.indicator, Some(Mode::Abc));
+    let out = t.ch('a');
+    assert_eq!((out.mode, out.consumed), (Mode::Abc, false));
+}
+
+#[test]
+fn a_capital_letter_commits_unfinished_romaji_before_switching_to_abc_mode() {
+    let mut t = T::new();
+    t.kana();
+    t.typ("kak");
+    let out = t.ch('A');
+    assert_eq!(out.commit.as_deref(), Some("kA"));
+    assert_eq!((out.mode, out.preedit.as_str()), (Mode::Abc, ""));
+}
+
+#[test]
+fn a_capital_letter_while_choosing_commits_the_candidate_and_stays_in_kana_mode() {
+    let mut t = reading_kanji();
+    t.key(Key::Space);
+    let out = t.ch('V');
+    assert_eq!(
+        (out.commit.as_deref(), out.mode),
+        (Some("漢字V"), Mode::Kana)
+    );
+}
+
+#[test]
+fn a_capital_letter_bound_to_a_function_does_that_function_instead() {
+    let mut config = config();
+    config.bindings.kana.push(Binding {
+        from: Chord {
+            key: Key::Char('Q'),
+            mods: Modifiers {
+                shift: true,
+                ..Default::default()
+            },
+        },
+        gesture: Gesture::Press,
+        to: Action::Begin,
+    });
+    let mut t = T::with_config(config);
+    t.kana();
+    let out = t.ch('Q');
+    assert_eq!((out.mode, out.preedit.as_str()), (Mode::Kana, "›"));
+}
+
+#[test]
+fn a_capital_letter_in_kana_mode_is_typed_through_the_romaji_table_when_not_switching() {
+    let mut t = T::with_config(Config {
+        abc_on_capital: false,
+        ..config()
+    });
     t.kana();
     let (commits, out) = t.typ("Kanji");
     assert_eq!((commits.as_str(), out.preedit.as_str()), ("Kあんじ", ""));
+    assert_eq!(out.mode, Mode::Kana);
 }
 
 #[test]

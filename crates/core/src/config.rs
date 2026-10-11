@@ -26,6 +26,9 @@ pub struct Config {
     /// reading they always are, so that they do not end up in what is
     /// converted.
     pub keep_unfinished_romaji: bool,
+    /// Whether a capital letter the romaji table does not take, typed in kana
+    /// mode outside a reading, switches to ABC mode and is typed there.
+    pub abc_on_capital: bool,
 }
 
 impl Default for Config {
@@ -39,6 +42,7 @@ impl Default for Config {
             tap_timeout_ms: 300,
             mode_indicator: true,
             keep_unfinished_romaji: true,
+            abc_on_capital: true,
         }
     }
 }

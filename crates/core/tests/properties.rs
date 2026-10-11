@@ -26,6 +26,7 @@ struct Variant {
     /// Ctrl with an unbound key commits and passes on while typing.
     pass_ctrl: bool,
     mode_indicator: bool,
+    abc_on_capital: bool,
 }
 
 impl Variant {
@@ -34,6 +35,7 @@ impl Variant {
         config.keep_unfinished_romaji = self.keep_unfinished_romaji;
         config.pass_while_composing.ctrl = self.pass_ctrl;
         config.mode_indicator = self.mode_indicator;
+        config.abc_on_capital = self.abc_on_capital;
         if self.hold_space {
             let hold = Binding {
                 from: plain(Key::Space),
@@ -182,14 +184,24 @@ fn step() -> impl Strategy<Value = Step> {
 }
 
 fn variant() -> impl Strategy<Value = Variant> {
-    (any::<bool>(), any::<bool>(), any::<bool>(), any::<bool>()).prop_map(
-        |(hold_space, keep_unfinished_romaji, pass_ctrl, mode_indicator)| Variant {
-            hold_space,
-            keep_unfinished_romaji,
-            pass_ctrl,
-            mode_indicator,
-        },
+    (
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
+        any::<bool>(),
     )
+        .prop_map(
+            |(hold_space, keep_unfinished_romaji, pass_ctrl, mode_indicator, abc_on_capital)| {
+                Variant {
+                    hold_space,
+                    keep_unfinished_romaji,
+                    pass_ctrl,
+                    mode_indicator,
+                    abc_on_capital,
+                }
+            },
+        )
 }
 
 /// The flag a modifier key sets while it is down.

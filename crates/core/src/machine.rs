@@ -285,7 +285,10 @@ impl<C: Converter> Core<C> {
                 // wait for that.
                 let mut keys = mem::take(&mut self.keys_waiting).into_iter();
                 for key in keys.by_ref() {
-                    self.key(key);
+                    // What ABC mode leaves to the application is typed here.
+                    if !self.key(key) && self.mode == Mode::Abc {
+                        self.type_passed(key);
+                    }
                     if self.erasing.is_some() {
                         break;
                     }
@@ -820,7 +823,21 @@ impl<C: Converter> Core<C> {
                     key => key,
                 };
                 match mem::replace(&mut self.state, State::idle()) {
-                    State::Idle { pending } => self.idle(pending, key),
+                    State::Idle { pending } => match key {
+                        Key::Char(c)
+                            if c.is_ascii_uppercase()
+                                && self.config.abc_on_capital
+                                && !self.config.romaji.is_input_char(c) =>
+                        {
+                            self.state = State::Idle { pending };
+                            self.leave_kana();
+                            // Typed here rather than passed on: a key replayed
+                            // after an erase can no longer reach the application.
+                            self.emit(c.encode_utf8(&mut [0; 4]));
+                            true
+                        }
+                        key => self.idle(pending, key),
+                    },
                     State::Reading(word) => self.reading(word, key),
                     State::Candidates(selection) => self.candidates(selection, key),
                 }
@@ -918,6 +935,18 @@ impl<C: Converter> Core<C> {
     }
 
     /// Esc with nothing to cancel passes through and returns to ABC mode.
+    /// Types the character a key passed on in ABC mode would have typed in
+    /// the application.
+    fn type_passed(&mut self, event: KeyEvent) {
+        let typing = event.kind != KeyKind::Release
+            && !(event.mods.ctrl || event.mods.cmd || event.mods.alt);
+        match event.key {
+            Key::Char(c) if typing => self.emit(c.encode_utf8(&mut [0; 4])),
+            Key::Space if typing => self.emit(" "),
+            _ => {}
+        }
+    }
+
     fn leave_on_esc(&mut self, key: Key) -> bool {
         if key == Key::Esc {
             self.mode = Mode::Abc;

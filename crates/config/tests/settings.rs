@@ -887,6 +887,17 @@ fn a_modifier_key_is_bound_to_its_press_and_to_its_tap_apart() {
 }
 
 #[test]
+fn a_capital_letter_switching_to_abc_mode_can_be_turned_off() {
+    assert!(defaults().abc_on_capital);
+    let (settings, problems) = load("[keys]\nabc_on_capital = false");
+    assert_eq!(problems, Vec::<String>::new());
+    assert!(!settings.config.abc_on_capital);
+    let (settings, problems) = load("[keys]\nabc_on_capital = \"no\"");
+    assert_eq!(problems, ["keys.abc_on_capital"]);
+    assert!(settings.config.abc_on_capital);
+}
+
+#[test]
 fn how_long_a_tap_may_last_is_a_number_of_milliseconds() {
     let (settings, problems) = load("[keys]\ntap_timeout_ms = 500");
     assert_eq!(problems, Vec::<String>::new());
@@ -1268,6 +1279,7 @@ const PLACES: &[(&str, &[&str])] = &[
             "pass_while_composing",
             "send_except",
             "tap_timeout_ms",
+            "abc_on_capital",
             "kana",
             "unknown",
         ],
