@@ -1084,6 +1084,23 @@ fn every_named_key_can_be_listed_and_read() {
 }
 
 #[test]
+fn the_template_names_every_key_that_can_be_written() {
+    let how_to_write_keys: String = TEMPLATE
+        .lines()
+        .skip_while(|line| !line.starts_with("# キーの書き方"))
+        .take_while(|line| line.starts_with('#'))
+        .collect();
+    for name in key_names() {
+        // The function keys are named together, as f1〜f12.
+        let written = match name.strip_prefix('f') {
+            Some(n) if n.parse::<u8>().is_ok() => "f1〜f12".to_owned(),
+            _ => name.clone(),
+        };
+        assert!(how_to_write_keys.contains(&written), "{name}");
+    }
+}
+
+#[test]
 fn every_modifier_tap_has_a_name_on_each_side() {
     let (settings, problems) = load(
         "[keys.kana]\n\"left-ctrl#tap\" = \"@abc\"\n\"right-cmd#tap\" = \"@abc\"\n\"left-alt#tap\" = \"@abc\"\n[keys.application]\n\"right-ctrl\" = \"enter\"",
