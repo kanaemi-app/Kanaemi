@@ -80,6 +80,23 @@ fn abc_mode_inside_registration_adds_letters_to_the_text() {
 }
 
 #[test]
+fn the_text_to_register_is_typed_by_the_bindings_of_its_mode() {
+    let mut config = config();
+    config
+        .bindings
+        .registration_abc
+        .retain(|b| b.to != Action::Begin);
+    let mut t = T::with_config(config);
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.typ(";ka");
+    assert_eq!(t.key(Key::Enter).preedit, "»ぬぬ « か", "kana mode begins");
+    t.tap(Key::ShiftLeft);
+    assert_eq!(t.ch(';').preedit, "»ぬぬ « か;");
+}
+
+#[test]
 fn registration_can_nest() {
     let mut t = T::new();
     t.kana();

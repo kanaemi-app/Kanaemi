@@ -117,6 +117,32 @@ fn a_key_of_an_os_table_goes_under_that_table_and_back() {
 }
 
 #[test]
+fn a_key_of_a_mode_table_goes_under_that_table_beside_the_kana_key_and_back() {
+    for mode in [kanaemi_core::Mode::Kana, kanaemi_core::Mode::Abc].map(kanaemi_config::mode_table)
+    {
+        let path = ["keys", "registration", mode, "space"];
+
+        let text = edited(TEMPLATE, |e| {
+            e.set(&["keys", "registration", "kana"], "@none");
+            e.set(&path, "@none");
+        });
+
+        assert!(
+            text.contains(&format!(
+                "\n[keys.registration.{mode}]\nspace = \"@none\"\n"
+            )),
+            "{text}"
+        );
+        settings(&text);
+        let reset = edited(&text, |e| {
+            e.reset(&path);
+            e.reset(&["keys", "registration", "kana"]);
+        });
+        assert_eq!(reset, TEMPLATE, "{mode}");
+    }
+}
+
+#[test]
 fn resetting_one_item_keeps_the_others_and_their_section() {
     let text = edited(TEMPLATE, |e| {
         e.set(&["marks", "reading"], "▽");

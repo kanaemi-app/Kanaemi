@@ -4,16 +4,18 @@
 
 use dioxus::prelude::*;
 use kanaemi_config::{
-    ApplicationTables, UNBOUND, Value, actions, bindings_table, format_action, format_chord,
-    parse_action, parse_binding_key, parse_chord, sendable_keys,
+    ApplicationTables, REGISTRATION_TABLE, RegistrationTables, UNBOUND, Value, actions,
+    bindings_table, format_action, format_binding_key, format_chord, parse_action,
+    parse_binding_key, parse_chord, sendable_keys,
 };
-use kanaemi_core::{Action, Bindings, Chord, Config, Form, Os};
+use kanaemi_core::{Action, Bindings, Chord, Config, Form, Mode, Os};
 
 use crate::Ctx;
 use crate::complete::KeyInput;
 use crate::controls::Filter;
 use crate::icons::{self, Icon};
 use crate::intents::{self, Change, GROUPS, Intent};
+use crate::registration::{self, Pressed};
 use crate::remaps::{self, Edit, Row};
 use crate::send_except::SendExcept;
 
@@ -358,14 +360,18 @@ fn accessibility_missing() -> bool {
 #[component]
 pub fn Keys() -> Element {
     let ctx = use_context::<Ctx>();
-    let (config, tables) = ctx
+    let (config, tables, registering) = ctx
         .store
         .read()
         .state
         .as_ref()
         .map(|loaded| {
             let settings = &loaded.settings;
-            (settings.config.clone(), settings.application_tables.clone())
+            (
+                settings.config.clone(),
+                settings.application_tables.clone(),
+                settings.registration_tables.clone(),
+            )
         })
         .unwrap_or_default();
     let shipped = Config::default();
@@ -428,7 +434,7 @@ pub fn Keys() -> Element {
             SendExcept { apps: config.send_except }
         };
     }
-    let modes = [
+    let typing = [
         (
             "reading",
             "読みを打っているとき",
@@ -444,11 +450,8 @@ pub fn Keys() -> Element {
             "候補を選んでいるとき",
             "変換して、候補を選んでいるとき（例：»漢字）",
         ),
-        (
-            "registration",
-            "語を登録しているとき",
-            "辞書にない語を、新しく登録しているとき",
-        ),
+    ];
+    let idle = [
         (
             "kana",
             "かなモードで何も打っていないとき",
@@ -466,7 +469,19 @@ pub fn Keys() -> Element {
             "押したキーに機能を割り当てます。たとえば Space と Ctrl+N には「次の候補」が割り当ててあり、どちらでも次の候補に進めます。場面ごとに決められ、行をクリックすると変えられます。"
         }
         Filter { placeholder: "キーで絞り込む…", oninput: move |text| filter.set(text) }
-        for (mode , title , note) in modes {
+        for (mode , title , note) in typing {
+            BindingSection {
+                key: "{mode}",
+                mode,
+                title,
+                note,
+                bindings: bindings_table(&current, mode),
+                defaults: bindings_table(&shipped.bindings, mode),
+                filter: filter(),
+            }
+        }
+        RegistrationSection { tables: registering, filter: filter() }
+        for (mode , title , note) in idle {
             BindingSection {
                 key: "{mode}",
                 mode,
@@ -1214,6 +1229,329 @@ fn RemapAddForm(tables: ApplicationTables, on_close: EventHandler<()>) -> Elemen
     }
 }
 
+/// A mode by the name it goes by.
+fn mode_label(mode: Mode) -> &'static str {
+    match mode {
+        Mode::Kana => "かなモード",
+        Mode::Abc => "ABC モード",
+    }
+}
+
+/// A pressed key as the settings file writes it.
+fn pressed_text(key: Pressed) -> String {
+    format_binding_key(key.0, key.1).unwrap_or_default()
+}
+
+/// What a mode does for a key while the text to register is typed, in
+/// words.
+fn registering_label(action: Option<Action>) -> String {
+    match action {
+        Some(action) => target_label(REGISTRATION_TABLE, &format_action(action)),
+        None => "（外してある）".to_owned(),
+    }
+}
+
+/// The rows to show, those whose key, or what a mode does for it, matches
+/// `query`. A key the user bound and took out in every mode is gone, as in
+/// the other scenes.
+fn shown_registration_rows(all: &[registration::Row], query: &str) -> Vec<registration::Row> {
+    all.iter()
+        .filter(|row| {
+            row.actions.iter().any(|(mode, action)| {
+                action.is_some() || registration::default_action(*mode, row.key).is_some()
+            })
+        })
+        .filter(|row| {
+            query.is_empty()
+                || pressed_text(row.key).contains(query)
+                || row
+                    .actions
+                    .iter()
+                    .filter_map(|(_, action)| *action)
+                    .any(|action| format_action(action).contains(query))
+        })
+        .cloned()
+        .collect()
+}
+
+/// The keys bound while the text to register is typed, both modes side by
+/// side: a row per pressed key, a column per mode with what it does there. A
+/// cell opens a form for that mode under its row.
+#[component]
+fn RegistrationSection(tables: RegistrationTables, filter: String) -> Element {
+    let ctx = use_context::<Ctx>();
+    let mut editing = use_signal(|| None::<(Pressed, Mode)>);
+    let mut adding = use_signal(|| false);
+    let mut error = use_signal(|| None::<String>);
+    let query = filter.to_lowercase();
+    let rows = shown_registration_rows(&registration::rows(&tables), &query);
+    if rows.is_empty() && !query.is_empty() {
+        return rsx! {};
+    }
+    let columns = registration::MODES.len() + 2;
+    let cell_class = move |key: Pressed, mode: Mode, action: Option<Action>| {
+        let mut class = "bound".to_owned();
+        if action.is_none() {
+            class.push_str(" none");
+        }
+        if editing() == Some((key, mode)) {
+            class.push_str(" editing");
+        }
+        class
+    };
+    rsx! {
+        section { class: "group",
+            h2 { "語を登録しているとき" }
+            p { class: "note",
+                "辞書にない語を、新しく登録しているとき。かなモードと ABC モードで分けて決められ、機能をクリックすると変えられます"
+            }
+            if let Some(message) = error() {
+                p { class: "error", "変えられませんでした：{message}" }
+            }
+            div { class: "box",
+                table { class: "bindings per-mode",
+                    thead {
+                        tr {
+                            th { "押すキー" }
+                            for mode in registration::MODES {
+                                th { key: "{mode:?}", "{mode_label(mode)}" }
+                            }
+                            th {}
+                        }
+                    }
+                    tbody {
+                        for row in rows {
+                            tr { key: "{pressed_text(row.key)}", class: "mode-row",
+                                td { class: "key-cell",
+                                    span { class: "key-badge", "{shown(&pressed_text(row.key))}" }
+                                }
+                                for (mode , action) in row.actions.clone() {
+                                    td {
+                                        key: "{mode:?}",
+                                        class: cell_class(row.key, mode, action),
+                                        title: "{mode_label(mode)} での機能",
+                                        onclick: move |_| {
+                                            adding.set(false);
+                                            editing.set(Some((row.key, mode)));
+                                        },
+                                        "{registering_label(action)}"
+                                    }
+                                }
+                                td { class: "status",
+                                    if !row.is_default() {
+                                        button {
+                                            class: "reset",
+                                            onclick: {
+                                                let edits = registration::writing(
+                                                    &tables,
+                                                    row.key,
+                                                    |mode| registration::default_action(mode, row.key),
+                                                );
+                                                move |_| error.set(apply_edits(ctx, &edits).err())
+                                            },
+                                            "既定に戻す"
+                                        }
+                                    }
+                                }
+                            }
+                            if let Some((key, mode)) = editing().filter(|(key, _)| *key == row.key) {
+                                // Keyed by the mode too, so another cell of the
+                                // row opens a fresh form, not this one's choice.
+                                tr { key: "edit-{pressed_text(row.key)}-{mode:?}",
+                                    td { colspan: "{columns}",
+                                        RegistrationForm {
+                                            tables: tables.clone(),
+                                            pressed: key,
+                                            mode,
+                                            on_close: move |_| editing.set(None),
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if adding() {
+                    RegistrationAddForm { tables: tables.clone(), on_close: move |_| adding.set(false) }
+                } else {
+                    button {
+                        class: "add",
+                        onclick: move |_| {
+                            editing.set(None);
+                            adding.set(true);
+                        },
+                        Icon { paths: icons::PLUS }
+                        "割り当てを足す"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// Changes what `mode` does for `pressed`, or what both modes do alike.
+#[component]
+fn RegistrationForm(
+    tables: RegistrationTables,
+    pressed: Pressed,
+    mode: Mode,
+    on_close: EventHandler<()>,
+) -> Element {
+    let ctx = use_context::<Ctx>();
+    let targets = targets(REGISTRATION_TABLE);
+    // Empty for none: the key is bound to nothing.
+    let mut target = use_signal(|| {
+        registration::action(&tables, mode, pressed)
+            .map(format_action)
+            .unwrap_or_default()
+    });
+    let mut error = use_signal(|| None::<String>);
+    let write = move |both: bool| {
+        let chosen = parse_action(target());
+        let edits = registration::writing(&tables, pressed, |m| {
+            if both || m == mode {
+                chosen
+            } else {
+                registration::action(&tables, m, pressed)
+            }
+        });
+        match apply_edits(ctx, &edits) {
+            Ok(()) => on_close.call(()),
+            Err(message) => error.set(Some(message)),
+        }
+    };
+    rsx! {
+        div {
+            class: "binding-form",
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key() == Key::Escape {
+                    on_close.call(());
+                }
+            },
+            div { class: "binding-form-row",
+                span { class: "form-os", "{mode_label(mode)}で" }
+                span { class: "key-badge", "{shown(&pressed_text(pressed))}" }
+                span { class: "arrow", Icon { paths: icons::ARROW_RIGHT } }
+                select {
+                    "aria-label": "{mode_label(mode)} での機能",
+                    value: "{target}",
+                    onchange: move |e| target.set(e.value()),
+                    option { value: "", selected: target().is_empty(), "（外す）" }
+                    for (value , label) in targets {
+                        option { value: "{value}", selected: target() == value, "{label}" }
+                    }
+                }
+            }
+            if let Some(message) = error() {
+                p { class: "error", "この割り当ては使えません：{message}" }
+            }
+            div { class: "binding-form-buttons",
+                button {
+                    class: "primary",
+                    onclick: {
+                        let mut write = write.clone();
+                        move |_| write(false)
+                    },
+                    "保存"
+                }
+                button {
+                    onclick: {
+                        let mut write = write.clone();
+                        move |_| write(true)
+                    },
+                    "両方のモードに保存"
+                }
+                button { onclick: move |_| on_close.call(()), "キャンセル" }
+            }
+        }
+    }
+}
+
+/// Adds a binding while the text to register is typed, in the modes ticked;
+/// the others go on doing what they did.
+#[component]
+fn RegistrationAddForm(tables: RegistrationTables, on_close: EventHandler<()>) -> Element {
+    let ctx = use_context::<Ctx>();
+    let key = use_signal(String::new);
+    let press = use_signal(|| Press::Down);
+    let targets = targets(REGISTRATION_TABLE);
+    let mut target = use_signal(|| targets[0].0.clone());
+    let mut modes = use_signal(|| registration::MODES.to_vec());
+    let mut error = use_signal(|| None::<String>);
+    let save = move |_| {
+        let Some(written) = written_key(&key(), press()) else {
+            return;
+        };
+        let Some(pressed) = parse_binding_key(&written) else {
+            error.set(Some(format!("キー「{written}」が読めません")));
+            return;
+        };
+        let chosen = parse_action(target());
+        let edits = registration::writing(&tables, pressed, |mode| {
+            if modes.read().contains(&mode) {
+                chosen
+            } else {
+                registration::action(&tables, mode, pressed)
+            }
+        });
+        match apply_edits(ctx, &edits) {
+            Ok(()) => on_close.call(()),
+            Err(message) => error.set(Some(message)),
+        }
+    };
+    rsx! {
+        div {
+            class: "binding-form",
+            onkeydown: move |e: KeyboardEvent| {
+                if e.key() == Key::Escape {
+                    on_close.call(());
+                }
+            },
+            div { class: "binding-form-row",
+                KeyField { chord: key, press }
+                span { class: "arrow", Icon { paths: icons::ARROW_RIGHT } }
+                select {
+                    value: "{target}",
+                    onchange: move |e| target.set(e.value()),
+                    for (value , label) in targets {
+                        option { value: "{value}", selected: target() == value, "{label}" }
+                    }
+                }
+            }
+            div { class: "binding-form-row os-choice",
+                for mode in registration::MODES {
+                    label { key: "{mode:?}",
+                        input {
+                            r#type: "checkbox",
+                            checked: modes.read().contains(&mode),
+                            onchange: move |e: FormEvent| {
+                                let mut list = modes.write();
+                                list.retain(|m| *m != mode);
+                                if e.checked() {
+                                    list.push(mode);
+                                }
+                            },
+                        }
+                        "{mode_label(mode)}"
+                    }
+                }
+            }
+            if let Some(message) = error() {
+                p { class: "error", "この割り当ては使えません：{message}" }
+            }
+            div { class: "binding-form-buttons",
+                button {
+                    class: "primary",
+                    disabled: key().trim().is_empty() || modes.read().is_empty(),
+                    onclick: save,
+                    "足す"
+                }
+                button { onclick: move |_| on_close.call(()), "キャンセル" }
+            }
+        }
+    }
+}
+
 /// Where a scene is, in a few words for a key bound there only.
 fn scene_label(scene: &str) -> &'static str {
     match scene {
@@ -1222,23 +1560,41 @@ fn scene_label(scene: &str) -> &'static str {
         "reading" => "読みを打っているとき",
         "completion" => "補完の一覧が出ているとき",
         "candidates" => "候補を選んでいるとき",
-        "registration" => "語を登録しているとき",
+        registration::KANA_SCENE => "かなで語を登録しているとき",
+        registration::ABC_SCENE => "ABC で語を登録しているとき",
         _ => "",
     }
 }
 
+/// Where a key bound in some scenes only is bound, in a few words; the text
+/// to register in both modes is one place.
+fn scenes_label(scenes: &[&str]) -> String {
+    let both = registration::MODES
+        .iter()
+        .all(|mode| scenes.contains(&registration::scene(*mode)));
+    let mut labels: Vec<&str> = Vec::new();
+    for scene in scenes {
+        let label = match registration::mode_of(scene) {
+            Some(_) if both => "語を登録しているとき",
+            _ => scene_label(scene),
+        };
+        if !labels.contains(&label) {
+            labels.push(label);
+        }
+    }
+    format!("{}だけ", labels.join("・"))
+}
+
 /// Writes every change, or none when one is refused.
 fn apply(ctx: Ctx, changes: &[Change]) -> Result<(), String> {
-    let changes: Vec<(Vec<&str>, Option<Value>)> = changes
-        .iter()
-        .map(|(scene, key, value)| {
-            (
-                vec!["keys", *scene, key.as_str()],
-                value.clone().map(Into::into),
-            )
-        })
-        .collect();
-    ctx.try_change_many(&changes)
+    let registering = ctx
+        .store
+        .read()
+        .state
+        .as_ref()
+        .map(|loaded| loaded.settings.registration_tables.clone())
+        .unwrap_or_default();
+    apply_edits(ctx, &intents::edits(changes, &registering))
 }
 
 /// The keys by what they do, each set once for every scene it works in.
@@ -1350,10 +1706,11 @@ fn IntentRow(intent: Intent, current: Bindings) -> Element {
         .everywhere
         .iter()
         .map(|k| (k.clone(), None))
-        .chain(keys.somewhere.iter().map(|(k, scenes)| {
-            let labels: Vec<&str> = scenes.iter().map(|s| scene_label(s)).collect();
-            (k.clone(), Some(format!("{}だけ", labels.join("・"))))
-        }))
+        .chain(
+            keys.somewhere
+                .iter()
+                .map(|(k, scenes)| (k.clone(), Some(scenes_label(scenes)))),
+        )
         .collect();
     let empty = chips.is_empty();
     rsx! {
@@ -1728,6 +2085,53 @@ mod tests {
         assert_eq!(shown_rows(&all, "ctrl+a"), [all[0].clone()]);
         assert_eq!(shown_rows(&all, "alt+"), [all[1].clone()]);
         assert_eq!(shown_rows(&all, "end"), []);
+    }
+
+    fn registration_row(key: &str, actions: [Option<&str>; 2]) -> registration::Row {
+        registration::Row {
+            key: parse_binding_key(key).unwrap(),
+            actions: registration::MODES
+                .into_iter()
+                .zip(actions)
+                .map(|(mode, to)| (mode, to.and_then(parse_action)))
+                .collect(),
+        }
+    }
+
+    #[test]
+    fn the_filter_matches_the_key_or_what_either_mode_does() {
+        let all = [
+            registration_row("enter", [Some("@commit"), Some("@commit")]),
+            registration_row("left-shift#tap", [None, Some("@abc")]),
+        ];
+
+        assert_eq!(shown_registration_rows(&all, ""), all);
+        assert_eq!(shown_registration_rows(&all, "enter"), [all[0].clone()]);
+        assert_eq!(shown_registration_rows(&all, "#tap"), [all[1].clone()]);
+        assert_eq!(shown_registration_rows(&all, "abc"), [all[1].clone()]);
+        assert_eq!(shown_registration_rows(&all, "cancel"), []);
+    }
+
+    #[test]
+    fn a_key_bound_in_neither_mode_nor_by_default_is_gone() {
+        let all = [
+            registration_row("ctrl+x", [None, None]),
+            registration_row("enter", [None, None]),
+        ];
+
+        assert_eq!(shown_registration_rows(&all, ""), [all[1].clone()]);
+    }
+
+    #[test]
+    fn a_key_bound_while_registering_in_both_modes_says_so_once() {
+        assert_eq!(
+            scenes_label(&["reading", registration::KANA_SCENE, registration::ABC_SCENE]),
+            "読みを打っているとき・語を登録しているときだけ"
+        );
+        assert_eq!(
+            scenes_label(&[registration::ABC_SCENE]),
+            "ABC で語を登録しているときだけ"
+        );
     }
 
     #[test]

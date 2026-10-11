@@ -199,6 +199,14 @@
 #"henkan" = "@kana"
 #";" = "@begin"
 
+# モードを限った、語を登録しているときの割り当て。書き方は上と同じで、そのモードで打っているときだけ上の表のあとに当てる。
+# 同じキーならモードの表が勝ち、"@none" でそのモードでは上の割り当てを外す。
+# かなモードだけ
+#[keys.registration.kana-mode]
+
+# ABC モードだけ
+#[keys.registration.abc-mode]
+
 # かなモードで、何も打っていないとき
 #[keys.kana]
 #"left-shift#tap" = "@abc"
