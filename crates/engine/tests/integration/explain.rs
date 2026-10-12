@@ -164,6 +164,24 @@ fn every_way_a_dictionary_gives_a_surface_is_listed_the_one_taken_first() {
 }
 
 #[test]
+fn a_split_at_the_mark_is_taken_over_a_cheaper_word_of_the_whole_reading() {
+    let e = engine(
+        vec![Slot::UserCustom, text("きて\t来て\t\t1\nき*て\t来て\t\t5")],
+        "",
+    );
+    let explanation = e.explain("きて", Some("て"));
+    let candidate = explained(&explanation, "来て");
+    assert_eq!(
+        candidate.origins,
+        [
+            origin(1, 5, okuri("き", OkuriHead::Kana('て'), "来")),
+            origin(1, 1, word("きて", "来て")),
+        ]
+    );
+    assert_eq!(candidate.facts.cost, 5);
+}
+
+#[test]
 fn a_pair_the_user_hid_is_dropped_as_hidden() {
     let e = engine(
         vec![Slot::UserCustom, text("かく\t角\nかく\t画")],
