@@ -57,10 +57,27 @@ impl<D: Dictionary + ?Sized> Dictionary for std::sync::Arc<D> {
 /// kana itself (`か*く`) and those filed under only its row (`か*k`). None
 /// when `kana` starts no okurigana.
 pub fn okuri_lookup(dictionary: &(impl Dictionary + ?Sized), stem: &str, kana: char) -> Vec<Entry> {
-    let mut found: Vec<Entry> = OkuriHead::of(kana)
-        .flat_map(|head| dictionary.okuri(stem, head))
+    okuri_lookup_by_head(dictionary, stem, kana)
+        .into_iter()
+        .map(|(_, e)| e)
+        .collect()
+}
+
+/// [`okuri_lookup`], each word with the head it is filed under.
+pub(crate) fn okuri_lookup_by_head(
+    dictionary: &(impl Dictionary + ?Sized),
+    stem: &str,
+    kana: char,
+) -> Vec<(OkuriHead, Entry)> {
+    let mut found: Vec<(OkuriHead, Entry)> = OkuriHead::of(kana)
+        .flat_map(|head| {
+            dictionary
+                .okuri(stem, head)
+                .into_iter()
+                .map(move |e| (head, e))
+        })
         .collect();
-    found.sort_by_key(|e| e.cost);
+    found.sort_by_key(|(_, e)| e.cost);
     found
 }
 

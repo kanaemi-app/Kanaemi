@@ -346,6 +346,23 @@ impl RankingModel {
             .map(|i| self.weight(i))
             .sum()
     }
+
+    /// Each of the candidate's features, its parts joined by U+001F, with
+    /// its weight, in the order its score sums them.
+    pub(crate) fn features(
+        &self,
+        input: &RankingInput,
+        candidate: &CandidateFacts,
+    ) -> Vec<(String, f32)> {
+        let mut out = Vec::new();
+        let mut bytes = Vec::new();
+        each_feature(input, candidate, |parts| {
+            join(parts, &mut bytes);
+            let weight = self.weight(index_of(&bytes, self.bits));
+            out.push((String::from_utf8_lossy(&bytes).into_owned(), weight));
+        });
+        out
+    }
 }
 
 #[cfg(test)]

@@ -4,12 +4,15 @@ use std::sync::Arc;
 
 use kanaemi_core::{Candidate, Converter, Effect};
 
+use crate::dictionary::okuri_lookup_by_head;
+use crate::explain::Trace;
 use crate::numeric::Numbers;
 use crate::placeholder::{Functions, OPEN, fill, fits};
 use crate::{
-    CONTEXT_CHARS, CandidateFacts, ConjugationTable, Dictionary, HISTORY_LEN, ItemLine, LineSink,
-    MAX_SUFFIX_KANA, RankingInput, RankingModel, Selections, TextDictionary, UserCustom,
-    WriteError, mark_placeholders, nfc, okuri_lookup, okuri_row,
+    CONTEXT_CHARS, CandidateFacts, ConjugationTable, Dictionary, DropReason, Explained,
+    Explanation, HISTORY_LEN, ItemLine, LineSink, LookupKey, MAX_SUFFIX_KANA, OkuriHead,
+    OriginItem, RankingInput, RankingModel, RuleGroup, Score, Selections, TextDictionary,
+    UserCustom, WriteError, mark_placeholders, nfc, okuri_row,
 };
 
 /// On a frequency scale (100 per factor of e) this ranks a built form after
@@ -215,10 +218,52 @@ impl Engine {
         okurigana: Option<&str>,
     ) -> Vec<CandidateFacts> {
         let okurigana = okurigana.map(nfc);
-        self.found(&nfc(reading.as_ref()), okurigana.as_deref())
+        self.found(&nfc(reading.as_ref()), okurigana.as_deref(), None)
             .into_iter()
             .map(|f| f.facts)
             .collect()
+    }
+
+    /// How converting `reading` in this field now gathers and orders its
+    /// candidates. The conversion a commit is recorded by stays the one
+    /// converted last.
+    pub fn explain(&self, reading: impl AsRef<str>, okurigana: Option<&str>) -> Explanation {
+        let reading = nfc(reading.as_ref());
+        let okurigana = okurigana.map(nfc);
+        let mut trace = Trace::default();
+        let found = self.found(&reading, okurigana.as_deref(), Some(&mut trace));
+        let candidates = self
+            .order(&reading, found, Some(&mut trace))
+            .into_iter()
+            .map(|f| {
+                let notes = trace.notes.remove(&f.facts.surface).unwrap_or_default();
+                Explained {
+                    source: self.source(f.facts.dictionary),
+                    facts: f.facts,
+                    origins: notes.origins,
+                    okuri: f.okuri,
+                    score: notes
+                        .score
+                        .expect("ranking scores every candidate while explaining"),
+                    ranked: notes.ranked,
+                    after_okuri_first: notes.after_okuri_first,
+                    favorite: notes.favorite,
+                }
+            })
+            .collect();
+        let input = self.field.input(&reading);
+        Explanation {
+            context: input.context.to_owned(),
+            history_len: input.history.len(),
+            ranked_by_model: self.model.is_some(),
+            okuri_first_applied: trace.okuri_first_applied,
+            favor_applied: trace.favor_applied,
+            lookups: trace.lookups,
+            dropped: trace.dropped,
+            candidates,
+            reading,
+            okurigana,
+        }
     }
 
     /// Puts the record of picks read from where it is kept in place.
@@ -378,7 +423,7 @@ impl Engine {
         last.or_else(|| {
             template(
                 &self
-                    .found(&reading, None)
+                    .found(&reading, None, None)
                     .into_iter()
                     .map(|f| f.facts)
                     .collect::<Vec<_>>(),
@@ -438,7 +483,12 @@ impl Engine {
         self.user.write(line.to_string());
     }
 
-    fn found(&self, reading: &str, okurigana: Option<&str>) -> Vec<Found> {
+    fn found(
+        &self,
+        reading: &str,
+        okurigana: Option<&str>,
+        mut trace: Option<&mut Trace>,
+    ) -> Vec<Found> {
         let mut all: Vec<Found> = Vec::new();
         let user = self.user.dictionary();
         let numbers = match okurigana {
@@ -449,6 +499,9 @@ impl Engine {
         for (priority, slot) in self.slots.iter().enumerate() {
             let dictionary = slot.dictionary(user);
             let hidden = |reading: &str, surface: &str| user.is_hidden(reading, surface);
+            if let Some(t) = trace.as_deref_mut() {
+                t.dictionary = priority;
+            }
             for mut f in found_in(
                 dictionary,
                 reading,
@@ -456,10 +509,22 @@ impl Engine {
                 numbers.as_ref(),
                 functions,
                 &hidden,
+                trace.as_deref_mut(),
             ) {
                 match all.iter_mut().find(|a| a.facts.surface == f.facts.surface) {
-                    Some(a) => a.okuri |= f.okuri,
+                    Some(a) => {
+                        a.okuri |= f.okuri;
+                        if let Some(t) = trace.as_deref_mut() {
+                            let reason = DropReason::Shadowed {
+                                by: a.facts.dictionary,
+                            };
+                            t.left_out_gathered(&f.facts.surface, reason);
+                        }
+                    }
                     None => {
+                        if let Some(t) = trace.as_deref_mut() {
+                            t.kept(&f.facts.surface);
+                        }
                         f.facts.dictionary = priority;
                         all.push(f);
                     }
@@ -469,9 +534,33 @@ impl Engine {
         all
     }
 
+    /// Ranks, then brings candidates split at the mark and favorites to the
+    /// front, as converting gives them. Each candidate keeps its places on
+    /// the way while explaining.
+    fn order(&self, reading: &str, found: Vec<Found>, mut trace: Option<&mut Trace>) -> Vec<Found> {
+        let ranked = self.rank(reading, found, trace.as_deref_mut());
+        if let Some(t) = trace.as_deref_mut() {
+            for (place, f) in ranked.iter().enumerate() {
+                t.note(&f.facts.surface).ranked = place;
+            }
+        }
+        let ranked = self.okuri_first(reading, ranked, trace.as_deref_mut());
+        if let Some(t) = trace.as_deref_mut() {
+            for (place, f) in ranked.iter().enumerate() {
+                t.note(&f.facts.surface).after_okuri_first = place;
+            }
+        }
+        self.favor(reading, ranked, trace)
+    }
+
     /// Sorts by the model's score; ties, and every candidate without a model,
     /// go by the rules.
-    fn rank(&self, reading: &str, mut all: Vec<Found>) -> Vec<Found> {
+    fn rank(
+        &self,
+        reading: &str,
+        mut all: Vec<Found>,
+        mut trace: Option<&mut Trace>,
+    ) -> Vec<Found> {
         fn key(f: &Found) -> (usize, u32, &[u8]) {
             (f.facts.dictionary, f.facts.cost, f.facts.surface.as_bytes())
         }
@@ -480,7 +569,14 @@ impl Engine {
             let input = self.field.input(reading);
             let mut scored: Vec<(f32, Found)> = all
                 .into_iter()
-                .map(|f| (model.score_candidate(&input, &f.facts), f))
+                .map(|f| {
+                    let total = model.score_candidate(&input, &f.facts);
+                    if let Some(t) = trace.as_deref_mut() {
+                        let features = model.features(&input, &f.facts);
+                        t.note(&f.facts.surface).score = Some(Score::Model { total, features });
+                    }
+                    (total, f)
+                })
                 .collect();
             scored.sort_by(|(sa, a), (sb, b)| sb.total_cmp(sa).then_with(|| tie(a, b)));
             return scored.into_iter().map(|(_, f)| f).collect();
@@ -488,13 +584,18 @@ impl Engine {
         let group = |f: &Found| {
             let (reading, surface) = f.facts.recorded(reading);
             if self.field.last(reading) == Some(surface) {
-                0
+                RuleGroup::LastCommit
             } else if self.field.history.iter().any(|(_, s)| s == surface) {
-                1
+                RuleGroup::Committed
             } else {
-                2
+                RuleGroup::Other
             }
         };
+        if let Some(t) = trace {
+            for f in &all {
+                t.note(&f.facts.surface).score = Some(Score::Rules(group(f)));
+            }
+        }
         all.sort_by(|a, b| group(a).cmp(&group(b)).then_with(|| tie(a, b)));
         all
     }
@@ -514,9 +615,17 @@ impl Engine {
     /// says how the reading splits, which a word of the whole reading (立ちゃ
     /// for たち*ゃ) may not. Once the reading has a commit in
     /// this field, the field's history decides instead.
-    fn okuri_first(&self, reading: &str, ranked: Vec<Found>) -> Vec<Found> {
+    fn okuri_first(
+        &self,
+        reading: &str,
+        ranked: Vec<Found>,
+        trace: Option<&mut Trace>,
+    ) -> Vec<Found> {
         if self.field.last(reading).is_some() {
             return ranked;
+        }
+        if let Some(t) = trace {
+            t.okuri_first_applied = true;
         }
         let (mut okuri, rest): (Vec<_>, Vec<_>) = ranked.into_iter().partition(|f| f.okuri);
         okuri.extend(rest);
@@ -527,7 +636,12 @@ impl Engine {
     /// Once the reading, or the reading of an item a candidate filled, has a commit in
     /// this field, the field's history decides instead: a choice just made
     /// there is not overturned.
-    fn favor(&self, reading: &str, ranked: Vec<Found>) -> Vec<Found> {
+    fn favor(
+        &self,
+        reading: &str,
+        ranked: Vec<Found>,
+        mut trace: Option<&mut Trace>,
+    ) -> Vec<Found> {
         let committed = |reading: &str| self.field.last(reading).is_some();
         if committed(reading)
             || ranked
@@ -536,19 +650,19 @@ impl Engine {
         {
             return ranked;
         }
+        if let Some(t) = trace.as_deref_mut() {
+            t.favor_applied = true;
+        }
         let mut weighed: Vec<(f64, Found)> = ranked
             .into_iter()
             .map(|f| {
                 let (recorded_reading, surface) = f.facts.recorded(reading);
                 let weight = self.selections.weight(recorded_reading, surface);
-                (
-                    if weight >= Selections::FAVORITE {
-                        weight
-                    } else {
-                        0.0
-                    },
-                    f,
-                )
+                let favorite = (weight >= Selections::FAVORITE).then_some(weight);
+                if let Some(t) = trace.as_deref_mut() {
+                    t.note(&f.facts.surface).favorite = favorite;
+                }
+                (favorite.unwrap_or(0.0), f)
             })
             .collect();
         // Stable, so the rest keeps the order it was ranked in.
@@ -630,14 +744,12 @@ impl Converter for Engine {
     fn convert(&self, reading: &str, okurigana: Option<&str>) -> Vec<Candidate> {
         let reading = &nfc(reading);
         let okurigana = okurigana.map(nfc);
-        let found = self.found(reading, okurigana.as_deref());
+        let found = self.found(reading, okurigana.as_deref(), None);
         if okurigana.is_none() && !self.without_functions.get() {
             let facts = found.iter().map(|f| f.facts.clone()).collect();
             self.last.replace(Some((reading.clone(), facts)));
         }
-        let ranked = self.rank(reading, found);
-        let ranked = self.okuri_first(reading, ranked);
-        self.favor(reading, ranked)
+        self.order(reading, found, None)
             .into_iter()
             .map(|f| Candidate {
                 source: self.source(f.facts.dictionary),
@@ -722,7 +834,8 @@ fn placeholder_registration(
 /// The candidates one dictionary gives for a reading, and for its `numbers`
 /// put in numeric items, merged by surface at the cheapest cost. An item
 /// whose recorded pair is `hidden` is left out before merging, so it takes no
-/// other item of its surface with it.
+/// other item of its surface with it. Each item looked at, kept or left out,
+/// goes to `trace` while explaining.
 fn found_in(
     dictionary: &dyn Dictionary,
     reading: &str,
@@ -730,19 +843,35 @@ fn found_in(
     numbers: Option<&Numbers>,
     functions: Option<&dyn Functions>,
     hidden: &dyn Fn(&str, &str) -> bool,
+    mut trace: Option<&mut Trace>,
 ) -> Vec<Found> {
     let mut found: Vec<Found> = Vec::new();
-    let mut add = |surface: String,
+    // The item, made from the candidate's surface, is made only while
+    // explaining.
+    let mut add = |trace: Option<&mut Trace>,
+                   surface: String,
                    cost: u32,
                    built: bool,
                    template: Option<(String, String)>,
-                   okuri: bool| {
+                   okuri: bool,
+                   item: &dyn Fn(&str) -> OriginItem| {
         let (recorded_reading, recorded_surface) = match &template {
             Some((reading, surface)) => (reading.as_str(), surface.as_str()),
             None => (reading, surface.as_str()),
         };
         if hidden(recorded_reading, recorded_surface) {
+            if let Some(t) = trace {
+                let item = item(&surface);
+                t.left_out(Some(surface), cost, item, DropReason::Hidden);
+            }
             return;
+        }
+        if let Some(t) = trace {
+            let taken = found
+                .iter()
+                .find(|f| f.facts.surface == surface)
+                .is_none_or(|f| cost < f.facts.cost);
+            t.gathered(&surface, cost, item(&surface), taken);
         }
         match found.iter_mut().find(|f| f.facts.surface == surface) {
             Some(f) => {
@@ -765,30 +894,77 @@ fn found_in(
             }),
         }
     };
+    let placeholders = |reading: &str, surface: &str| OriginItem::Placeholders {
+        reading: reading.to_owned(),
+        surface: surface.to_owned(),
+    };
     // One lookup for each place the reading may split: the whole reading's
     // words come first, then each split's conjugating stems.
-    let splits: Vec<(&str, Vec<_>)> = stem_splits(reading, okurigana)
+    let splits: Vec<(&str, &str, Vec<_>)> = stem_splits(reading, okurigana)
         .into_iter()
-        .map(|(stem, rest)| (rest, dictionary.lookup(stem)))
+        .map(|(stem, rest)| {
+            let entries = dictionary.lookup(stem);
+            if let Some(t) = trace.as_deref_mut() {
+                t.looked_up(LookupKey::Reading(stem.to_owned()), entries.len());
+            }
+            (stem, rest, entries)
+        })
         .collect();
     let whole = match splits.last() {
-        Some(("", entries)) => entries.clone(),
-        _ => dictionary.lookup(reading),
+        Some((_, "", entries)) => entries.clone(),
+        _ => {
+            let entries = dictionary.lookup(reading);
+            if let Some(t) = trace.as_deref_mut() {
+                t.looked_up(LookupKey::Reading(reading.to_owned()), entries.len());
+            }
+            entries
+        }
     };
     for e in whole.into_iter().filter(|e| e.conjugation.is_none()) {
         if !e.surface.contains(OPEN) {
-            add(e.surface, e.cost, false, None, false);
-        } else if okurigana.is_none()
+            let item = |surface: &str| OriginItem::Word {
+                reading: reading.to_owned(),
+                surface: surface.to_owned(),
+            };
+            add(
+                trace.as_deref_mut(),
+                e.surface,
+                e.cost,
+                false,
+                None,
+                false,
+                &item,
+            );
+        } else if okurigana.is_some()
             // A hidden item runs no function: one may count its calls.
-            && !hidden(reading, &e.surface)
-            && let Some(surface) = fill(&e.surface, &[], reading, functions)
+            || hidden(reading, &e.surface)
         {
-            let template = (reading.to_owned(), e.surface);
-            add(nfc(&surface), e.cost, false, Some(template), false);
+            if let Some(t) = trace.as_deref_mut() {
+                let reason = match okurigana {
+                    Some(_) => DropReason::NotFilled,
+                    None => DropReason::Hidden,
+                };
+                t.left_out(None, e.cost, placeholders(reading, &e.surface), reason);
+            }
+        } else if let Some(surface) = fill(&e.surface, &[], reading, functions) {
+            let item = |_: &str| placeholders(reading, &e.surface);
+            let template = (reading.to_owned(), e.surface.clone());
+            add(
+                trace.as_deref_mut(),
+                nfc(&surface),
+                e.cost,
+                false,
+                Some(template),
+                false,
+                &item,
+            );
+        } else if let Some(t) = trace.as_deref_mut() {
+            let item = placeholders(reading, &e.surface);
+            t.left_out(None, e.cost, item, DropReason::NotFilled);
         }
     }
     let table = ConjugationTable::builtin();
-    for (rest, entries) in splits {
+    for (stem, rest, entries) in splits {
         for e in entries {
             let Some(conjugation) = &e.conjugation else {
                 continue;
@@ -797,50 +973,107 @@ fn found_in(
                 Some(_) => table.prefixes(conjugation),
                 None => table.suffixes(conjugation),
             };
+            let cost = e.cost.saturating_add(CONJUGATED_COST);
+            let item = |_: &str| OriginItem::Conjugated {
+                stem: stem.to_owned(),
+                surface: e.surface.clone(),
+                conjugation: conjugation.clone(),
+                rest: rest.to_owned(),
+            };
             if allowed.is_some_and(|set| set.contains(rest)) {
                 add(
+                    trace.as_deref_mut(),
                     format!("{}{rest}", e.surface),
-                    e.cost.saturating_add(CONJUGATED_COST),
+                    cost,
                     true,
                     None,
                     // With okurigana, the stem reaches the mark.
                     okurigana.is_some(),
+                    &item,
                 );
+            } else if let Some(t) = trace.as_deref_mut() {
+                let surface = format!("{}{rest}", e.surface);
+                let item = item(&surface);
+                t.left_out(Some(surface), cost, item, DropReason::NotConjugated);
             }
         }
     }
     if let Some(okurigana) = okurigana
         && let Some(stem) = reading.strip_suffix(okurigana)
+        && let Some(kana) = okurigana.chars().next()
     {
-        for o in okurigana
-            .chars()
-            .next()
-            .map(|kana| okuri_lookup(dictionary, stem, kana))
-            .unwrap_or_default()
-        {
+        let words = okuri_lookup_by_head(dictionary, stem, kana);
+        if let Some(t) = trace.as_deref_mut() {
+            for head in OkuriHead::of(kana) {
+                let found = words.iter().filter(|(h, _)| *h == head).count();
+                let key = LookupKey::Okuri {
+                    stem: stem.to_owned(),
+                    head,
+                };
+                t.looked_up(key, found);
+            }
+        }
+        for (head, o) in words {
+            let item = |_: &str| OriginItem::Okuri {
+                stem: stem.to_owned(),
+                head,
+                surface: o.surface.clone(),
+            };
             add(
+                trace.as_deref_mut(),
                 format!("{}{okurigana}", o.surface),
                 o.cost,
                 false,
                 None,
                 true,
+                &item,
             );
         }
     }
     if let Some(numbers) = numbers {
         let items = dictionary.lookup(&numbers.reading);
+        if let Some(t) = trace.as_deref_mut() {
+            t.looked_up(LookupKey::Reading(numbers.reading.clone()), items.len());
+        }
         for e in items.into_iter().filter(|e| e.conjugation.is_none()) {
+            let item = |_: &str| placeholders(&numbers.reading, &e.surface);
             if hidden(&numbers.reading, &e.surface) {
+                if let Some(t) = trace.as_deref_mut() {
+                    let item = placeholders(&numbers.reading, &e.surface);
+                    t.left_out(None, e.cost, item, DropReason::Hidden);
+                }
                 continue;
             }
-            if let Some(surface) = fill(&e.surface, &numbers.values, reading, functions) {
-                let template = (numbers.reading.clone(), e.surface);
-                add(nfc(&surface), e.cost, false, Some(template), false);
+            match fill(&e.surface, &numbers.values, reading, functions) {
+                Some(surface) => {
+                    let template = (numbers.reading.clone(), e.surface.clone());
+                    add(
+                        trace.as_deref_mut(),
+                        nfc(&surface),
+                        e.cost,
+                        false,
+                        Some(template),
+                        false,
+                        &item,
+                    );
+                }
+                None => {
+                    if let Some(t) = trace.as_deref_mut() {
+                        let item = placeholders(&numbers.reading, &e.surface);
+                        t.left_out(None, e.cost, item, DropReason::NotFilled);
+                    }
+                }
             }
         }
     }
     if let Some(okurigana) = okurigana {
-        found.retain(|f| f.facts.surface.ends_with(okurigana));
+        let fits = |f: &Found| f.facts.surface.ends_with(okurigana);
+        if let Some(t) = trace {
+            for f in found.iter().filter(|f| !fits(f)) {
+                t.left_out_gathered(&f.facts.surface, DropReason::OkuriganaMismatch);
+            }
+        }
+        found.retain(fits);
     }
     found
 }
@@ -879,7 +1112,7 @@ mod tests {
             TextDictionary::parse_user_custom("").0,
             Discard,
         );
-        let found = engine.found("かく", None);
+        let found = engine.found("かく", None, None);
         let book = &found
             .iter()
             .find(|f| f.facts.surface == "書く")

@@ -6,6 +6,7 @@ mod binary_dictionary;
 mod common;
 mod completion;
 mod conversion;
+mod explain;
 mod numeric;
 mod placeholder;
 mod ranking;
