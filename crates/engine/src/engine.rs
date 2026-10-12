@@ -1,4 +1,5 @@
 use std::cell::{Cell, RefCell};
+use std::cmp::Reverse;
 use std::rc::Rc;
 use std::sync::Arc;
 
@@ -139,6 +140,15 @@ struct Found {
     /// Split where the user marked the okurigana: made from an okurigana
     /// word, or from a conjugating stem reaching the mark.
     okuri: bool,
+}
+
+impl Found {
+    /// Whether another way of making the same surface takes over its cost. A
+    /// split at the mark outranks a word of the whole reading at any cost:
+    /// that word's cost is for typing the reading unmarked.
+    fn yields_to(&self, cost: u32, okuri: bool) -> bool {
+        (okuri, Reverse(cost)) > (self.okuri, Reverse(self.facts.cost))
+    }
 }
 
 impl Engine {
@@ -870,17 +880,17 @@ fn found_in(
             let taken = found
                 .iter()
                 .find(|f| f.facts.surface == surface)
-                .is_none_or(|f| cost < f.facts.cost);
+                .is_none_or(|f| f.yields_to(cost, okuri));
             t.gathered(&surface, cost, item(&surface), taken);
         }
         match found.iter_mut().find(|f| f.facts.surface == surface) {
             Some(f) => {
-                f.okuri |= okuri;
-                if cost < f.facts.cost {
+                if f.yields_to(cost, okuri) {
                     f.facts.cost = cost;
                     f.facts.built = built;
                     f.facts.template = template;
                 }
+                f.okuri |= okuri;
             }
             None => found.push(Found {
                 facts: CandidateFacts {

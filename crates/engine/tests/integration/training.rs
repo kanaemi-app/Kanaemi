@@ -76,6 +76,18 @@ fn candidate_facts_with_okurigana_are_the_candidates_split_at_the_mark() {
 }
 
 #[test]
+fn candidate_facts_split_at_the_mark_carry_the_split_cost() {
+    let e = engine(vec![
+        Slot::UserCustom,
+        text("きて\t来て\t\t1\nき*て\t来て\t\t5"),
+    ]);
+    assert_eq!(
+        e.candidate_facts("きて", Some("て")),
+        [facts("来て", 1, 5, false)]
+    );
+}
+
+#[test]
 fn candidate_facts_look_the_reading_up_composed() {
     let e = engine(vec![Slot::UserCustom, text("かぐ\t家具\t\t5")]);
     assert_eq!(

@@ -177,8 +177,9 @@ pub(crate) struct Trace {
     pub(crate) okuri_first_applied: bool,
     pub(crate) favor_applied: bool,
     /// The origins of each surface the dictionary being gathered from gave,
-    /// until it is kept or left out.
-    gathering: HashMap<String, Vec<Origin>>,
+    /// in the order found, and where the one taken is, until it is kept or
+    /// left out.
+    gathering: HashMap<String, (Vec<Origin>, usize)>,
     /// Each candidate kept, by its surface: no two share one.
     pub(crate) notes: HashMap<String, Notes>,
 }
@@ -202,24 +203,30 @@ impl Trace {
         }
     }
 
-    /// Records an item the dictionary gave `surface` by: first when it is
-    /// the one taken.
+    /// Records an item the dictionary gave `surface` by.
     pub(crate) fn gathered(&mut self, surface: &str, cost: u32, item: OriginItem, taken: bool) {
         let origin = self.origin(cost, item);
-        let origins = self.gathering.entry(surface.to_owned()).or_default();
-        let at = if taken { 0 } else { origins.len() };
-        origins.insert(at, origin);
+        let (origins, at) = self.gathering.entry(surface.to_owned()).or_default();
+        if taken {
+            *at = origins.len();
+        }
+        origins.push(origin);
     }
 
-    /// Keeps what the dictionary gave `surface` by as a candidate's.
+    /// Keeps what the dictionary gave `surface` by as a candidate's, the one
+    /// taken first.
     pub(crate) fn kept(&mut self, surface: &str) {
-        let origins = self.gathering.remove(surface).unwrap_or_default();
+        let (mut origins, at) = self.gathering.remove(surface).unwrap_or_default();
+        if at < origins.len() {
+            let taken = origins.remove(at);
+            origins.insert(0, taken);
+        }
         self.notes.entry(surface.to_owned()).or_default().origins = origins;
     }
 
     /// Leaves out every item the dictionary gave `surface` by.
     pub(crate) fn left_out_gathered(&mut self, surface: &str, reason: DropReason) {
-        let origins = self.gathering.remove(surface).unwrap_or_default();
+        let (origins, _) = self.gathering.remove(surface).unwrap_or_default();
         self.dropped
             .extend(origins.into_iter().map(|origin| Dropped {
                 surface: Some(surface.to_owned()),

@@ -62,6 +62,18 @@ fn conjugated_words_split_at_the_mark_keep_their_order_among_okurigana_words() {
 }
 
 #[test]
+fn a_candidate_split_at_the_mark_is_ranked_by_its_split_cost_not_its_whole_reading_word() {
+    let (e, _) = engine(
+        vec![
+            Slot::UserCustom,
+            text("きて\t来て\t\t1\nき*て\t来て\t\t5\nき*て\t着て\t\t3"),
+        ],
+        "",
+    );
+    assert_eq!(surfaces(&e, "きて", Some("て")), ["着て", "来て"]);
+}
+
+#[test]
 fn a_commit_of_the_reading_keeps_its_order_over_okurigana_words() {
     let (mut e, _) = engine(vec![Slot::UserCustom, text(TACHA)], "");
     e.commit("たちゃ", "立ちゃ");
