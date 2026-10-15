@@ -9,13 +9,18 @@ pub const HISTORY_LEN: usize = 300;
 
 const MAGIC: &[u8; 8] = b"KANAEMIM";
 /// The format version of the model files this engine reads.
-pub const MODEL_FORMAT_VERSION: u32 = 3;
+pub const MODEL_FORMAT_VERSION: u32 = 4;
 const HEADER_LEN: usize = 32;
 const BITS: std::ops::RangeInclusive<u8> = 10..=28;
 /// The length of a file of the most weights, each of the widest type.
 const MAX_LEN: u64 = HEADER_LEN as u64 + (4 << *BITS.end());
 /// Joins a feature's name and values; no reading or surface holds it.
 const SEPARATOR: char = '\u{1f}';
+/// The width of the narrow and the wide steps costs are seen in. A cost is
+/// 100 per factor of e in how often a word is used, so a step is the same
+/// ratio of use at every cost.
+const COST_STEP: u32 = 50;
+const WIDE_COST_STEP: u32 = 200;
 
 /// What one conversion is ranked against.
 #[derive(Clone, Copy, Debug)]
@@ -131,11 +136,13 @@ fn join(parts: &[Part], out: &mut Vec<u8>) {
 fn each_feature(input: &RankingInput, candidate: &CandidateFacts, mut emit: impl FnMut(&[Part])) {
     use Part::{Char, Number, Text};
     let (reading, s) = candidate.recorded(input.reading);
-    let cost = band(candidate.cost as usize);
+    let step = (candidate.cost / COST_STEP) as usize;
+    let wide_step = (candidate.cost / WIDE_COST_STEP) as usize;
     emit(&[Text("s"), Text(s)]);
     emit(&[Text("rs"), Text(reading), Text(s)]);
-    emit(&[Text("c"), Number(cost)]);
-    emit(&[Text("dc"), Number(candidate.dictionary), Number(cost)]);
+    emit(&[Text("c"), Number(step)]);
+    emit(&[Text("cw"), Number(wide_step)]);
+    emit(&[Text("dc"), Number(candidate.dictionary), Number(wide_step)]);
     emit(&[Text("x"), Text(flag(candidate.built))]);
 
     let history = input.history;
@@ -189,7 +196,7 @@ fn each_feature(input: &RankingInput, candidate: &CandidateFacts, mut emit: impl
     }
 }
 
-/// `floor(log2(n + 1))`: counts and costs by their order of magnitude.
+/// `floor(log2(n + 1))`: counts by their order of magnitude.
 fn band(n: usize) -> usize {
     (n + 1).ilog2() as usize
 }
@@ -417,8 +424,9 @@ mod tests {
             [
                 "s|記者",
                 "rs|きしゃ|記者",
-                "c|2",
-                "dc|1|2",
+                "c|0",
+                "cw|0",
+                "dc|1|0",
                 "x|0",
                 "hl|0",
                 "hr|0",
@@ -428,6 +436,26 @@ mod tests {
                 "hc|0|記者",
             ]
         );
+    }
+
+    #[test]
+    fn costs_are_seen_in_steps_of_equal_width() {
+        let input = RankingInput {
+            reading: "たいしょう",
+            history: &[],
+            context: "",
+        };
+        let cost = |cost: u32| -> Vec<String> {
+            names(&features(&input, &facts("対象", 1, cost, false)))
+                .into_iter()
+                .filter(|f| f.starts_with('c') || f.starts_with("dc"))
+                .collect()
+        };
+        assert_eq!(cost(794), ["c|15", "cw|3", "dc|1|3"]);
+        assert_eq!(cost(1022), ["c|20", "cw|5", "dc|1|5"]);
+        // No step is wider where costs are larger: 1023 and 1024 sit in one.
+        assert_eq!(cost(1023), cost(1024));
+        assert_ne!(cost(1100), cost(1999));
     }
 
     #[test]
@@ -614,7 +642,7 @@ mod tests {
         let mut old = RankingModel::new(10, Weights::F32(vec![0.0; 1 << 10]))
             .unwrap()
             .to_bytes();
-        old[8..12].copy_from_slice(&2u32.to_le_bytes());
+        old[8..12].copy_from_slice(&3u32.to_le_bytes());
         assert!(RankingModel::from_bytes(old).is_err());
     }
 

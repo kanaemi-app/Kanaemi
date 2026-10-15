@@ -95,7 +95,7 @@ pub fn ranking_model(bits: u8) -> Vec<u8> {
     let body: Vec<u8> = (0..1u64 << bits).map(|_| random.below(256) as u8).collect();
     let mut file = Vec::with_capacity(32 + body.len());
     file.extend_from_slice(b"KANAEMIM");
-    file.extend_from_slice(&3u32.to_le_bytes());
+    file.extend_from_slice(&4u32.to_le_bytes());
     file.push(bits);
     file.push(1);
     file.extend_from_slice(&[0, 0]);
