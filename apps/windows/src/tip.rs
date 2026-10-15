@@ -95,7 +95,12 @@ fn open_profile() -> Profile {
         Access::Full
     };
     let profile = Profile::open_with(dir, access);
-    tracing::debug!("profile opened");
+    tracing::info!(
+        version = kanaemi_core::VERSION,
+        arch = std::env::consts::ARCH,
+        sandboxed = pipe::in_app_container(),
+        "profile opened"
+    );
     profile
 }
 
@@ -475,9 +480,9 @@ impl State {
             self.dispatch(Event::Erased(false), context, sync);
         }
         let Some(output) = self.handle(event) else {
+            tracing::info!("no field to handle the event");
             return false;
         };
-        tracing::debug!(?event, ?output, "handled");
         let erasing = output
             .erase
             .as_deref()
@@ -500,6 +505,7 @@ impl State {
             key: Key::Backspace,
             mods: Modifiers::default(),
         };
+        tracing::info!(presses, "erasing text");
         if (0..presses).all(|_| send_key(backspace)) {
             self.erasing.set(presses);
             self.erasing_since.set(unsafe { GetTickCount64() });
@@ -603,8 +609,10 @@ impl State {
         }
     }
 
-    fn key(&self, wparam: WPARAM, lparam: LPARAM, down: bool) -> Option<Event> {
+    /// The key a key sink was called with, `sink` naming the call.
+    fn key(&self, wparam: WPARAM, lparam: LPARAM, down: bool, sink: &str) -> Option<Event> {
         let raw = raw_key(wparam, lparam, down);
+        tracing::info!(sink, %raw, "key");
         self.keys.borrow_mut().translate(&raw).map(Event::Key)
     }
 
@@ -852,6 +860,7 @@ fn send_key(chord: Chord) -> bool {
         tracing::warn!(?chord, "no key code to send");
         return false;
     };
+    tracing::info!(chord = %kanaemi_runtime::LoggedChord(chord), vk, "key sent");
     let input = |vk: u16, up: bool| INPUT {
         r#type: INPUT_KEYBOARD,
         Anonymous: INPUT_0 {
@@ -905,7 +914,11 @@ fn send_key(chord: Chord) -> bool {
     inputs.push(input(vk, true));
     inputs.extend(held.iter().map(|&(vk, held)| input(vk, !held)));
     let sent = unsafe { SendInput(&inputs, std::mem::size_of::<INPUT>() as i32) };
-    sent as usize == inputs.len()
+    if sent as usize != inputs.len() {
+        tracing::warn!(sent, inputs = inputs.len(), "keys not all sent");
+        return false;
+    }
+    true
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
@@ -944,7 +957,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
                 && let Some(profile) = PROFILE.with_borrow_mut(PerThread::deactivate)
             {
                 drop(profile);
-                tracing::debug!("profile released");
+                tracing::info!("profile released");
             }
             Ok(())
         })
@@ -1119,15 +1132,17 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     ) -> Result<BOOL> {
         guarded(Ok(FALSE), || {
             if sent_here() {
+                tracing::info!(vk = wparam.0, "sent key came back; passed on");
                 return Ok(FALSE);
             }
             let state = &self.state;
             // A key tested and eaten comes again to OnKeyDown, which reads
             // it as this press read it.
-            let Some(event) = state.key(wparam, lparam, true) else {
+            let Some(event) = state.key(wparam, lparam, true, "test-down") else {
                 return Ok(FALSE);
             };
             if state.would_consume(event) {
+                tracing::info!("key tested eaten; handled when it comes again");
                 return Ok(TRUE);
             }
             state.tested.set(Some((wparam.0, lparam.0)));
@@ -1151,7 +1166,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 return Ok(FALSE);
             }
             state.tested.set(Some((wparam.0, lparam.0)));
-            if let Some(event) = state.key(wparam, lparam, false) {
+            if let Some(event) = state.key(wparam, lparam, false, "test-up") {
                 state.dispatch(event, context.as_ref(), false);
             }
             Ok(FALSE)
@@ -1161,16 +1176,19 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     fn OnKeyDown(&self, context: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
         guarded(Ok(FALSE), || {
             if sent_here() {
+                tracing::info!(vk = wparam.0, "sent key came back; passed on");
                 return Ok(FALSE);
             }
             let state = &self.state;
             if state.tested.take() == Some((wparam.0, lparam.0)) {
                 return Ok(FALSE);
             }
-            let Some(event) = state.key(wparam, lparam, true) else {
+            let Some(event) = state.key(wparam, lparam, true, "down") else {
                 return Ok(FALSE);
             };
-            Ok(state.dispatch(event, context.as_ref(), true).into())
+            let eaten = state.dispatch(event, context.as_ref(), true);
+            tracing::info!(eaten, "key answered");
+            Ok(eaten.into())
         })
     }
 
@@ -1186,7 +1204,7 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 state.sent_key_up(wparam, context.as_ref());
                 return Ok(FALSE);
             }
-            if let Some(event) = state.key(wparam, lparam, false) {
+            if let Some(event) = state.key(wparam, lparam, false, "up") {
                 state.dispatch(event, context.as_ref(), false);
             }
             Ok(FALSE)

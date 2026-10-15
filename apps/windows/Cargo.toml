@@ -12,11 +12,11 @@ crate-type = ["cdylib", "rlib"]
 
 [dependencies]
 kanaemi-core.workspace = true
+kanaemi-runtime.workspace = true
 
 [target.'cfg(windows)'.dependencies]
 kanaemi-config.workspace = true
 kanaemi-engine.workspace = true
-kanaemi-runtime.workspace = true
 tracing = { version = "0.1", features = ["release_max_level_info"] }
 windows = { version = "0.61", features = [
   "Win32_Foundation",
