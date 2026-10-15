@@ -2,7 +2,10 @@
 //! state, turned into the core's keys, and back for the keys the core sends
 //! to the application.
 
+use std::fmt;
+
 use kanaemi_core::{Chord, Key, KeyEvent, KeyKind, Modifiers};
+use kanaemi_runtime::{is_masked, masked};
 
 const SHIFT_MASK: u32 = 1 << 0;
 const CONTROL_MASK: u32 = 1 << 2;
@@ -84,6 +87,23 @@ pub struct Keys {
 }
 
 impl Keys {
+    /// Whether a press of `keycode` is of a key already down: X repeats a
+    /// key held as more presses.
+    fn repeating(&self, keycode: u32, state: u32) -> bool {
+        state & RELEASE_MASK == 0
+            && keycode != 0
+            && self.typed.iter().any(|(code, _)| *code == keycode)
+    }
+
+    /// Whether `keycode` is down as a key that types text, as its press read.
+    fn typed_text(&self, keycode: u32) -> bool {
+        keycode != 0
+            && self
+                .typed
+                .iter()
+                .any(|&(code, key)| code == keycode && matches!(key, Key::Char(_)))
+    }
+
     /// The core's key for a key event, its release marked in `state` by
     /// [`RELEASE_MASK`] as IBus marks it; `None` when it is not a press
     /// or release the core needs. X repeats no modifier, so a modifier's
@@ -96,6 +116,14 @@ impl Keys {
         state: u32,
         time_ms: u64,
     ) -> Option<KeyEvent> {
+        let logged = LoggedKeysym {
+            keyval,
+            keycode,
+            state,
+            repeat: self.repeating(keycode, state),
+            typed_text: self.typed_text(keycode),
+        };
+        tracing::info!(key = %logged, time_ms, "key");
         let mods = Modifiers {
             shift: state & SHIFT_MASK != 0,
             ctrl: state & CONTROL_MASK != 0,
@@ -190,6 +218,69 @@ fn character(keyval: u32) -> Option<char> {
     char::from_u32(code).filter(|c| !c.is_control())
 }
 
+/// A key event as the framework gave it, as the log tells it. A key typed as
+/// text is told only by the kind of its character: its codes would tell
+/// the character.
+pub struct LoggedKeysym {
+    pub keyval: u32,
+    pub keycode: u32,
+    pub state: u32,
+    /// A press of a key already down.
+    pub repeat: bool,
+    /// Whether the key was pressed as text, whatever it reads as now.
+    pub typed_text: bool,
+}
+
+impl fmt::Display for LoggedKeysym {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let release = self.state & RELEASE_MASK != 0;
+        f.write_str(if release { "release" } else { "press" })?;
+        let pressed = !release && !self.repeat;
+        let shortcut = pressed && self.state & (CONTROL_MASK | SUPER_MASK | MOD4_MASK) != 0;
+        let shown = match character(self.keyval) {
+            // Let go or repeating, the modifiers may have changed since the
+            // press, and with them the keysym, which would tell the one the
+            // press masked.
+            Some(_) if !pressed => {
+                f.write_str(" hidden")?;
+                None
+            }
+            // Pressed as text, the key may go as a named one, as KP_1 goes
+            // as KP_End once Shift is down.
+            None if !pressed && self.typed_text => {
+                f.write_str(" hidden")?;
+                None
+            }
+            Some(c) => {
+                let text = String::from(c);
+                if shortcut || !is_masked(&text) {
+                    write!(f, " keyval={:#x} keycode={}", self.keyval, self.keycode)?;
+                }
+                Some(if shortcut { text } else { masked(&text) })
+            }
+            // Keysyms of function keys and of vendor keys name no text;
+            // the others, such as those of kana and Cyrillic layouts, may
+            // type it in a way not read here.
+            None if matches!(self.keyval, 0xfd00..=0xffff | 0x1008_0000..=0x1008_ffff) => {
+                write!(f, " keyval={:#x} keycode={}", self.keyval, self.keycode)?;
+                None
+            }
+            None => {
+                f.write_str(" hidden")?;
+                None
+            }
+        };
+        if let Some(shown) = shown {
+            write!(f, " char={shown}")?;
+        }
+        write!(f, " state={:#x}", self.state)?;
+        if self.repeat {
+            f.write_str(" repeat")?;
+        }
+        Ok(())
+    }
+}
+
 /// The keysym and modifier state to forward for `chord`, for the keys the
 /// core can send.
 pub fn key_to_send(chord: Chord) -> Option<(u32, u32)> {
@@ -229,6 +320,110 @@ mod tests {
     /// One event read on its own, with no key down before it.
     fn translate(keyval: u32, state: u32, time_ms: u64) -> Option<KeyEvent> {
         Keys::default().translate(keyval, 38, state, time_ms)
+    }
+
+    fn logged(keyval: u32, keycode: u32, state: u32) -> String {
+        LoggedKeysym {
+            keyval,
+            keycode,
+            state,
+            repeat: false,
+            typed_text: false,
+        }
+        .to_string()
+    }
+
+    #[test]
+    fn a_key_typing_text_repeating_with_ctrl_held_since_is_hidden() {
+        let repeat = LoggedKeysym {
+            keyval: u32::from('k'),
+            keycode: 45,
+            state: CONTROL_MASK,
+            repeat: true,
+            typed_text: true,
+        };
+        assert_eq!(repeat.to_string(), "press hidden state=0x4 repeat");
+    }
+
+    #[test]
+    fn a_key_pressed_as_text_is_hidden_as_it_goes_though_it_now_reads_as_named() {
+        // KP_1 pressed with Num Lock on, then Shift, then let go as KP_End.
+        let end = LoggedKeysym {
+            keyval: 0xff9c,
+            keycode: 87,
+            state: SHIFT_MASK | RELEASE_MASK,
+            repeat: false,
+            typed_text: true,
+        };
+        assert_eq!(end.to_string(), "release hidden state=0x40000001");
+    }
+
+    #[test]
+    fn a_key_down_as_text_is_known_so() {
+        let mut keys = Keys::default();
+        keys.translate(0xffb1, 87, 0, 0);
+        keys.translate(0xff0d, 36, 0, 0);
+        assert!(keys.typed_text(87));
+        assert!(!keys.typed_text(36));
+        assert!(!keys.typed_text(0));
+    }
+
+    #[test]
+    fn a_key_pressed_again_while_down_is_a_repeat() {
+        let mut keys = Keys::default();
+        keys.translate(u32::from('k'), 45, 0, 0);
+        assert!(keys.repeating(45, 0));
+        assert!(!keys.repeating(46, 0));
+        assert!(!keys.repeating(45, RELEASE_MASK));
+        assert!(!keys.repeating(0, 0), "a key code of 0 tells no key");
+    }
+
+    #[test]
+    fn a_key_typed_as_text_is_logged_without_its_codes_or_character() {
+        assert_eq!(logged(u32::from('k'), 45, 0), "press char=a state=0x0");
+        assert_eq!(
+            logged(0x0100_3042, 0, RELEASE_MASK),
+            "release hidden state=0x40000000"
+        );
+        assert_eq!(
+            logged(u32::from(';'), 47, 0),
+            "press keyval=0x3b keycode=47 char=; state=0x0"
+        );
+    }
+
+    #[test]
+    fn a_letter_let_go_with_ctrl_held_is_still_masked() {
+        assert_eq!(
+            logged(u32::from('k'), 45, CONTROL_MASK | RELEASE_MASK),
+            "release hidden state=0x40000004"
+        );
+        // 1 pressed, then Shift, then 1 let go.
+        assert_eq!(
+            logged(u32::from('!'), 10, SHIFT_MASK | RELEASE_MASK),
+            "release hidden state=0x40000001"
+        );
+    }
+
+    #[test]
+    fn a_keysym_not_known_as_a_named_key_is_hidden() {
+        // kana_A, from a kana layout.
+        assert_eq!(logged(0x4b1, 30, 0), "press hidden state=0x0");
+        assert_eq!(
+            logged(0x1008_ff13, 123, 0),
+            "press keyval=0x1008ff13 keycode=123 state=0x0"
+        );
+    }
+
+    #[test]
+    fn a_named_key_or_a_shortcut_is_logged_with_its_codes() {
+        assert_eq!(
+            logged(0xff0d, 36, 0),
+            "press keyval=0xff0d keycode=36 state=0x0"
+        );
+        assert_eq!(
+            logged(u32::from('m'), 58, CONTROL_MASK),
+            "press keyval=0x6d keycode=58 char=m state=0x4"
+        );
     }
 
     #[test]

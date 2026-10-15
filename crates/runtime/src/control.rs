@@ -309,7 +309,7 @@ fn accept(listener: TcpListener, stopped: &AtomicBool, shared: &Shared) {
         let stream = match stream {
             Ok(stream) => stream,
             Err(error) => {
-                tracing::debug!(%error, "control connection not accepted");
+                tracing::info!(%error, "control connection not accepted");
                 continue;
             }
         };
@@ -325,7 +325,7 @@ fn accept(listener: TcpListener, stopped: &AtomicBool, shared: &Shared) {
                     connections.insert(id, tracked);
                 }
                 _ => {
-                    tracing::debug!("control connection refused");
+                    tracing::info!("control connection refused");
                     let _ = stream.shutdown(Shutdown::Both);
                     continue;
                 }
@@ -338,7 +338,7 @@ fn accept(listener: TcpListener, stopped: &AtomicBool, shared: &Shared) {
                 move || serve_connection(id, stream, &shared)
             });
         if let Err(error) = spawned {
-            tracing::debug!(%error, "control connection not served");
+            tracing::info!(%error, "control connection not served");
             let tracked = shared
                 .connections
                 .lock()

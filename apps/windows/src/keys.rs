@@ -1,7 +1,10 @@
 //! Windows virtual-key codes turned into the core's keys, and back for the
 //! keys the core sends to the application.
 
+use std::fmt;
+
 use kanaemi_core::{Chord, Key, KeyEvent, KeyKind, Modifiers};
+use kanaemi_runtime::{is_masked, masked};
 
 pub const VK_BACK: u16 = 0x08;
 pub const VK_TAB: u16 = 0x09;
@@ -63,6 +66,56 @@ pub struct RawKey {
     /// What the key types with Shift alone applied, if it types anything.
     pub character: Option<char>,
     pub time_ms: u64,
+}
+
+/// The key as the log tells it. A key typed as text is told only by the
+/// kind of its character: its codes would tell the character.
+impl fmt::Display for RawKey {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(if self.down { "down" } else { "up" })?;
+        let text = self.character.map(String::from).unwrap_or_default();
+        let pressed = self.down && !self.repeat;
+        // Let go or repeating, the modifiers may have changed since the
+        // press, and with them the character, which would tell the one the
+        // press masked.
+        let typing = self.character.is_some_and(|c| !c.is_control());
+        // A key whose text is not read, as when it types more than one
+        // UTF-16 unit, may type all the same; only a key known by name is
+        // told by its codes.
+        let unknown = self.character.is_none() && named(self.vk).is_none() && sided(self).is_none();
+        let hidden = (typing && !pressed) || unknown;
+        // Ctrl with Alt is AltGr, which types text.
+        let shortcut =
+            pressed && (self.mods.ctrl || self.mods.cmd) && !(self.mods.ctrl && self.mods.alt);
+        if !hidden && (shortcut || !is_masked(&text)) {
+            write!(f, " vk={:#x} scan={:#x}", self.vk, self.scan)?;
+            if self.extended {
+                f.write_str(" extended")?;
+            }
+        }
+        let Modifiers {
+            shift,
+            ctrl,
+            cmd,
+            alt,
+        } = self.mods;
+        for (held, name) in [(shift, "shift"), (ctrl, "ctrl"), (alt, "alt"), (cmd, "win")] {
+            if held {
+                write!(f, " {name}")?;
+            }
+        }
+        if hidden {
+            f.write_str(" hidden")?;
+        } else if !text.is_empty() {
+            let shown = if shortcut { text } else { masked(&text) };
+            write!(f, " char={shown}")?;
+        }
+        write!(f, " @{}", self.time_ms)?;
+        if self.repeat {
+            f.write_str(" repeat")?;
+        }
+        Ok(())
+    }
 }
 
 /// Remembers the keys down that are not modifiers, because the modifiers
@@ -256,6 +309,78 @@ mod tests {
             },
             ..raw(vk, true)
         }
+    }
+
+    #[test]
+    fn a_key_typed_as_text_is_logged_without_its_codes_or_character() {
+        assert_eq!(typed(0x4b, 'k', false).to_string(), "down char=a @0");
+        assert_eq!(typed(0x41, 'a', false).to_string(), "down char=a @0");
+        assert_eq!(typed(0x44, 'D', true).to_string(), "down shift char=A @0");
+    }
+
+    #[test]
+    fn a_letter_let_go_with_ctrl_held_is_still_masked() {
+        let ctrl_k_up = RawKey {
+            down: false,
+            mods: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..typed(0x4b, 'k', false)
+        };
+        assert_eq!(ctrl_k_up.to_string(), "up ctrl hidden @0");
+        // 1 pressed, then Shift, then 1 let go.
+        let bang_up = RawKey {
+            down: false,
+            ..typed(0x31, '!', true)
+        };
+        assert_eq!(bang_up.to_string(), "up shift hidden @0");
+        let repeat = RawKey {
+            repeat: true,
+            ..typed(0x4b, 'k', false)
+        };
+        assert_eq!(repeat.to_string(), "down hidden @0 repeat");
+    }
+
+    #[test]
+    fn a_key_whose_text_is_not_read_is_hidden_unless_named() {
+        assert_eq!(raw(0x41, true).to_string(), "down hidden @0");
+        assert_eq!(raw(VK_RETURN, true).to_string(), "down vk=0xd scan=0x0 @0");
+    }
+
+    #[test]
+    fn a_letter_typed_with_altgr_is_masked() {
+        let altgr = RawKey {
+            mods: Modifiers {
+                ctrl: true,
+                alt: true,
+                ..Default::default()
+            },
+            ..typed(0x4c, 'ł', false)
+        };
+        assert_eq!(altgr.to_string(), "down ctrl alt char=x @0");
+    }
+
+    #[test]
+    fn a_named_key_or_a_shortcut_is_logged_with_its_codes() {
+        assert_eq!(raw(VK_RETURN, false).to_string(), "up vk=0xd scan=0x0 @0");
+        let ctrl_m = RawKey {
+            mods: Modifiers {
+                ctrl: true,
+                ..Default::default()
+            },
+            ..typed(0x4d, 'm', false)
+        };
+        assert_eq!(ctrl_m.to_string(), "down vk=0x4d scan=0x0 ctrl char=m @0");
+        let repeat = RawKey {
+            repeat: true,
+            extended: true,
+            ..raw(VK_BACK, true)
+        };
+        assert_eq!(
+            repeat.to_string(),
+            "down vk=0x8 scan=0x0 extended @0 repeat"
+        );
     }
 
     #[test]

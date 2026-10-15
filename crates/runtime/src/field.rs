@@ -5,8 +5,8 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 use kanaemi_core::{Core, Effect, Event, Output};
 
-use crate::Profile;
 use crate::profile::SharedEngine;
+use crate::{LoggedEvent, LoggedOutput, Profile};
 
 /// The core of one field the IME serves.
 pub struct Field {
@@ -46,7 +46,11 @@ impl Field {
     /// Tells which application the field is in, as the host names it; the
     /// keys sent in place of others are not sent in one the settings except.
     pub fn set_application(&mut self, app: impl Into<String>) {
-        self.application = app.into();
+        let app = app.into();
+        if app != self.application {
+            tracing::info!(field = self.id, application = %app, "in an application");
+        }
+        self.application = app;
         self.core.set_application(&self.application);
     }
 
@@ -116,6 +120,7 @@ impl Field {
     /// candidates, and the key passed on to the application, as the event
     /// that panicked is left out.
     pub fn restart(&mut self, profile: &Profile) -> Output {
+        tracing::warn!(field = self.id, "started over");
         *self = self.rebuilt(profile);
         Output {
             consumed: false,
@@ -165,6 +170,12 @@ impl Field {
                 )
             });
         }
+        tracing::info!(
+            field = self.id,
+            event = %LoggedEvent(&event),
+            output = %LoggedOutput(&output),
+            "handled"
+        );
         profile.learn(&output.effects);
         profile.follow_focus(self.id, event, output.mode);
         // The focus may not come back to any field before the IME stops.
@@ -221,6 +232,7 @@ mod tests {
     use kanaemi_core::{Converter, Effect, Key, KeyEvent, KeyKind, Mode, Modifiers};
 
     use super::*;
+    use crate::captured::logged;
 
     fn temp_dir(name: &str) -> PathBuf {
         let dir = std::env::temp_dir().join(format!(
@@ -842,5 +854,38 @@ mod tests {
             (output.commit, output.preedit.as_str(), output.mode),
             (None, "", Mode::Abc)
         );
+    }
+
+    #[test]
+    fn each_event_is_logged_with_what_it_made_and_the_text_masked() {
+        let dir = temp_dir("log-masked");
+        let mut profile = Profile::open(&dir);
+        let mut field = Field::new(&profile);
+        let log = logged(|| {
+            field.set_application("com.example.editor");
+            field.handle(&mut profile, FOCUS_IN);
+            field.handle(&mut profile, press(Key::Kana));
+            typ(&mut field, &mut profile, ";ka");
+            field.handle(&mut profile, press(Key::Enter));
+        });
+        assert!(log.contains("application=com.example.editor"), "{log}");
+        assert!(log.contains("event=focus-in"), "{log}");
+        assert!(log.contains("event=press:a@0"), "{log}");
+        assert!(log.contains("preedit=\"›あ\""), "{log}");
+        assert!(log.contains("event=press:enter@0"), "{log}");
+        assert!(log.contains("commit=\"あ\""), "{log}");
+        assert!(!log.contains('か'), "the kana typed is masked: {log}");
+        assert!(!log.contains(":k@"), "the letter typed is masked: {log}");
+    }
+
+    #[test]
+    fn a_field_started_over_says_so() {
+        let dir = temp_dir("log-restart");
+        let profile = Profile::open(&dir);
+        let mut field = Field::new(&profile);
+        let log = logged(|| {
+            field.restart(&profile);
+        });
+        assert!(log.contains("started over"), "{log}");
     }
 }

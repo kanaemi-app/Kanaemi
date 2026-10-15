@@ -146,6 +146,10 @@ unsafe extern "C-unwind" fn callback(
         // macOS turns a tap off that it finds slow; it is turned on again
         // while it is wanted. What it missed is found by the keyboard's state.
         CGEventType::TapDisabledByTimeout | CGEventType::TapDisabledByUserInput => {
+            tracing::warn!(
+                by_timeout = kind == CGEventType::TapDisabledByTimeout,
+                "the event tap was turned off; turned on again"
+            );
             want(WANTED.get());
         }
         CGEventType::KeyDown | CGEventType::KeyUp

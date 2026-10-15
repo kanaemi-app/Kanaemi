@@ -92,7 +92,7 @@ impl Outbox {
 /// `received`, which returns whether to go on.
 pub fn run(pipe: File, outbox: &Outbox, mut received: impl FnMut(&str) -> bool) {
     if let Err(error) = serve(&pipe, outbox, &mut received) {
-        tracing::debug!(%error, "control connection ended");
+        tracing::info!(%error, "control connection ended");
     }
     outbox.end();
 }

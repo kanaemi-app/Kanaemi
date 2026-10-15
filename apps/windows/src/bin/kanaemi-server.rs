@@ -238,7 +238,11 @@ mod server {
             unwritten: VecDeque::new(),
         };
         let mut next = instance(true)?;
-        tracing::info!("serving the pipe");
+        tracing::info!(
+            version = kanaemi_core::VERSION,
+            arch = std::env::consts::ARCH,
+            "serving the pipe"
+        );
         serving();
         loop {
             let pipe = next;

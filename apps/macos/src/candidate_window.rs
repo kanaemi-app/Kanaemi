@@ -442,7 +442,7 @@ pub fn show(view: &CandidateView, client: &AnyObject) {
             let client_level: i32 = unsafe { msg_send![client, windowLevel] };
             window.panel.setLevel(window_level(client_level as isize));
             window.caret = caret_rect(client).unwrap_or_else(|| {
-                tracing::debug!("no caret to place the candidates by; placed by the pointer");
+                tracing::info!("no caret to place the candidates by; placed by the pointer");
                 let pointer = NSEvent::mouseLocation();
                 Rect {
                     x: pointer.x,

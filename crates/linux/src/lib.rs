@@ -27,7 +27,7 @@ fn read_clipboard() -> Option<String> {
     match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
         Ok(text) => Some(text),
         Err(error) => {
-            tracing::debug!(%error, "nothing to paste");
+            tracing::info!(%error, "nothing to paste");
             None
         }
     }
@@ -45,6 +45,33 @@ pub fn drop_focus(field: &mut Field, profile: &mut Profile) {
         tracing::warn!("dropping the focus panicked; the state was reset");
         field.restart(profile);
     }
+}
+
+/// Logs that the input method started, with what tells one desktop from
+/// another: an input method behaves by the session and the desktop.
+pub fn log_started(framework: &str) {
+    let os = std::fs::read_to_string("/etc/os-release")
+        .ok()
+        .and_then(|text| pretty_name(&text))
+        .unwrap_or_else(|| std::env::consts::OS.to_owned());
+    let var = |name| std::env::var(name).unwrap_or_default();
+    tracing::info!(
+        version = kanaemi_core::VERSION,
+        framework,
+        %os,
+        arch = std::env::consts::ARCH,
+        session = %var("XDG_SESSION_TYPE"),
+        desktop = %var("XDG_CURRENT_DESKTOP"),
+        "kanaemi started"
+    );
+}
+
+/// The name os-release gives the system to show.
+fn pretty_name(os_release: &str) -> Option<String> {
+    let value = os_release
+        .lines()
+        .find_map(|line| line.strip_prefix("PRETTY_NAME="))?;
+    Some(value.trim_matches('"').to_owned())
 }
 
 /// The settings app, installed beside the input method.
@@ -75,8 +102,8 @@ pub fn open_settings(input_method: &Path) {
 pub fn handle(field: &mut Field, profile: &mut Profile, event: Event, indicator: bool) -> Reply {
     match catch_unwind(AssertUnwindSafe(|| field.handle(profile, event))) {
         Ok(output) => {
-            tracing::debug!(?event, ?output, "handled");
             let mut reply = reply::reply(&output, indicator);
+            tracing::info!(consumed = reply.consumed, "answered");
             // The text is erased by keys forwarded ahead of what follows,
             // which the framework takes without telling whether they arrived.
             if output.erase.is_some() {
@@ -97,5 +124,18 @@ pub fn handle(field: &mut Field, profile: &mut Profile, event: Event, indicator:
                 ],
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_system_is_named_as_os_release_names_it_to_show() {
+        let text = "NAME=\"Ubuntu\"\nPRETTY_NAME=\"Ubuntu 24.04.1 LTS\"\nID=ubuntu\n";
+        assert_eq!(pretty_name(text).as_deref(), Some("Ubuntu 24.04.1 LTS"));
+        assert_eq!(pretty_name("PRETTY_NAME=Arch\n").as_deref(), Some("Arch"));
+        assert_eq!(pretty_name("ID=nixos\n"), None);
     }
 }

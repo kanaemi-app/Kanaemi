@@ -39,8 +39,15 @@ mod tip;
 mod ui_element;
 
 /// The log is set up once per process, by the first text service activated.
+/// The log is written by a thread of its own, so the DLL is kept loaded
+/// first; a DLL that cannot be kept writes no log rather than leave the
+/// thread to run code unloaded.
 #[cfg(windows)]
 fn init_logging() {
     static ONCE: std::sync::Once = std::sync::Once::new();
-    ONCE.call_once(kanaemi_runtime::init_logging);
+    ONCE.call_once(|| {
+        if com::pin().is_ok() {
+            kanaemi_runtime::init_logging();
+        }
+    });
 }

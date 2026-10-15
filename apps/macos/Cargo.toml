@@ -12,12 +12,12 @@ path = "src/main.rs"
 
 [dependencies]
 kanaemi-core.workspace = true
+kanaemi-runtime.workspace = true
 
 [target.'cfg(target_os = "macos")'.dependencies]
 block2 = "0.6"
 dispatch2 = "0.3"
 kanaemi-config.workspace = true
-kanaemi-runtime.workspace = true
 objc2 = "0.6"
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSRange", "NSAttributedString", "NSDictionary", "NSValue", "NSGeometry", "NSBundle", "NSProcessInfo"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSPanel", "NSWindow", "NSView", "NSTextField", "NSControl", "NSColor", "NSFont", "NSText", "NSGraphics", "NSAttributedString", "NSBox", "NSImage", "NSImageView", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "objc2-core-graphics", "block2"] }
