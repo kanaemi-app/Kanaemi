@@ -200,6 +200,12 @@ pub const GROUPS: &[(&str, &[Intent])] = &[
                 scenes: CONVERTING,
             },
             Intent {
+                title: "登録する語に貼り付ける",
+                note: "登録する語を打っているとき、クリップボードの文字列をカーソルの位置に貼ります。アプリのメニューやアプリの貼り付けのキーで貼ったものは、登録する語に入りません",
+                action: Action::Paste,
+                scenes: &[KANA_SCENE, ABC_SCENE],
+            },
+            Intent {
                 title: "この候補を以後出さない",
                 note: "",
                 action: Action::Forget,
@@ -493,6 +499,15 @@ mod tests {
         assert_eq!(
             keys(Action::UndoCommit).map(|k| k.everywhere),
             Some(vec!["shift+backspace".to_owned()])
+        );
+    }
+
+    #[test]
+    fn pasting_into_the_text_to_register_is_shown_with_its_shipped_key() {
+        let paste = intents().find(|i| i.action == Action::Paste).unwrap();
+        assert_eq!(
+            paste.keys(&Bindings::default()).everywhere,
+            ["ctrl+y", "ctrl+v"]
         );
     }
 

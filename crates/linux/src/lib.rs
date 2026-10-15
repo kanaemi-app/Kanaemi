@@ -14,6 +14,30 @@ use crate::reply::{Reply, Signal};
 pub mod keys;
 pub mod reply;
 
+/// A field for a context the framework made, pasting from the clipboard of
+/// the desktop: neither IBus nor Fcitx5 hands it to the input method alike.
+pub fn new_field(profile: &Profile) -> Field {
+    let mut field = Field::new(profile);
+    field.set_clipboard(read_clipboard);
+    field
+}
+
+#[cfg(target_os = "linux")]
+fn read_clipboard() -> Option<String> {
+    match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
+        Ok(text) => Some(text),
+        Err(error) => {
+            tracing::debug!(%error, "nothing to paste");
+            None
+        }
+    }
+}
+
+#[cfg(not(target_os = "linux"))]
+fn read_clipboard() -> Option<String> {
+    None
+}
+
 /// Ends the focus in `field` and drops what is being typed, for a field the
 /// framework no longer delivers text to. A panic starts the field over.
 pub fn drop_focus(field: &mut Field, profile: &mut Profile) {
@@ -67,7 +91,10 @@ pub fn handle(field: &mut Field, profile: &mut Profile, event: Event, indicator:
             field.restart(profile);
             Reply {
                 consumed: false,
-                signals: vec![Signal::Preedit(String::new(), 0), Signal::HideCandidates],
+                signals: vec![
+                    Signal::Preedit(String::new(), 0),
+                    Signal::HideCandidates(None),
+                ],
             }
         }
     }

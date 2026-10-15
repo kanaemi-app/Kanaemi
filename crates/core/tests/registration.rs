@@ -1,7 +1,17 @@
 mod common;
 
 use common::*;
-use kanaemi_core::{Action, Binding, Chord, Event, Gesture, Key, Mode, Modifiers};
+use kanaemi_core::{Action, Binding, Chord, Event, Gesture, Key, Mode, Modifiers, Registering};
+
+fn ctrl_chord(c: char) -> Chord {
+    Chord {
+        key: Key::Char(c),
+        mods: Modifiers {
+            ctrl: true,
+            ..Default::default()
+        },
+    }
+}
 
 #[test]
 fn registration_collects_what_is_typed_and_registers_on_enter() {
@@ -459,4 +469,179 @@ fn a_word_registered_in_abc_mode_is_committed_staying_in_abc_mode() {
     t.typ("vim");
     let out = t.key(Key::Enter);
     assert_eq!((out.commit.as_deref(), out.mode), (Some("vim"), Mode::Abc));
+}
+
+#[test]
+fn paste_asks_the_host_for_the_clipboard_and_puts_it_at_the_cursor() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.typ("ai");
+    t.key(Key::Left);
+    let out = t.ctrl('y');
+    assert!(out.paste);
+    assert!(out.consumed);
+    assert_eq!(out.preedit, "»ぬぬ « あ|い");
+    let out = t.paste("漢字");
+    assert!(!out.paste);
+    assert_eq!(out.preedit, "»ぬぬ « あ漢字|い");
+    t.key(Key::End);
+    let out = t.key(Key::Enter);
+    assert_eq!(out.commit.as_deref(), Some("あ漢字い"));
+    assert_eq!(
+        t.converter().registered,
+        [("ぬぬ".to_owned(), "あ漢字い".to_owned())]
+    );
+}
+
+#[test]
+fn registering_tells_the_keys_that_leave_and_paste_until_the_word_is_registered() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    assert_eq!(t.key(Key::Space).registering, None, "converting");
+    let out = t.go_past_the_candidates();
+    assert_eq!(
+        out.registering,
+        Some(Registering {
+            cancel: Some(plain(Key::Esc)),
+            paste: Some(ctrl_chord('y'))
+        })
+    );
+    t.typ(";ka");
+    let out = t.key(Key::Space);
+    assert!(out.candidates.is_some());
+    assert_eq!(
+        out.registering,
+        Some(Registering {
+            cancel: None,
+            paste: None
+        }),
+        "a reading inside it is still registering, where those keys do something else"
+    );
+    t.key(Key::Enter);
+    let out = t.key(Key::Enter);
+    assert_eq!(out.registering, None, "registered");
+}
+
+#[test]
+fn the_keys_told_are_those_of_the_mode_typed_in() {
+    let mut config = config();
+    config
+        .bindings
+        .registration_abc
+        .retain(|b| b.from != ctrl_chord('y'));
+    let mut t = T::with_config(config);
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    let out = t.tap(Key::ShiftLeft);
+    assert_eq!(out.registering.and_then(|r| r.paste), Some(ctrl_chord('v')));
+}
+
+#[test]
+fn with_no_key_bound_none_is_told() {
+    let mut config = config();
+    config
+        .bindings
+        .registration_kana
+        .retain(|b| !matches!(b.to, Action::Paste | Action::Cancel));
+    let mut t = T::with_config(config);
+    t.kana();
+    t.typ(";nunu");
+    let out = t.go_past_the_candidates();
+    assert_eq!(
+        out.registering,
+        Some(Registering {
+            cancel: None,
+            paste: None
+        })
+    );
+}
+
+#[test]
+fn ctrl_v_pastes_as_ctrl_y_does() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    assert!(t.ctrl('v').paste);
+}
+
+/// An application takes Cmd+V as its menu's paste even when the IME takes
+/// it too, so pasting on it would paste twice.
+#[test]
+fn cmd_v_is_not_a_paste_key_by_default() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    let out = t.press(
+        Key::Char('v'),
+        Modifiers {
+            cmd: true,
+            ..Default::default()
+        },
+    );
+    assert!(!out.paste);
+}
+
+#[test]
+fn paste_in_abc_mode_puts_the_text_into_the_text_to_register() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.tap(Key::ShiftLeft);
+    assert!(t.ctrl('y').paste);
+    let out = t.paste("vim");
+    assert_eq!(out.preedit, "»ぬぬ « vim");
+}
+
+#[test]
+fn paste_commits_unfinished_romaji_before_the_pasted_text() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.typ("k");
+    t.ctrl('y');
+    let out = t.paste("x");
+    assert_eq!(out.preedit, "»ぬぬ « kx");
+}
+
+#[test]
+fn pasted_line_breaks_and_other_control_characters_are_left_out() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.ctrl('y');
+    let out = t.paste("a b\r\nc\td\u{7}");
+    assert_eq!(out.preedit, "»ぬぬ « a bcd");
+}
+
+#[test]
+fn paste_outside_the_text_to_register_is_left_to_the_application() {
+    let mut t = T::new();
+    t.kana();
+    let out = t.ctrl('y');
+    assert!(!out.paste);
+    assert!(!out.consumed);
+    let out = t.paste("x");
+    assert_eq!((out.preedit.as_str(), out.commit), ("", None));
+}
+
+#[test]
+fn paste_inside_a_reading_being_registered_does_nothing() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";nunu");
+    t.go_past_the_candidates();
+    t.typ(";ka");
+    let out = t.ctrl('y');
+    assert!(!out.paste);
+    let out = t.paste("x");
+    assert_eq!(out.preedit, "»ぬぬ « ›か");
 }

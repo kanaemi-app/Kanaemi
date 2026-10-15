@@ -21,6 +21,17 @@ pub struct CandidateView {
     pub more: Vec<String>,
 }
 
+/// A word being registered, a reading inside it included. The keys are the
+/// first bound in the mode the text to register is typed in, told only while
+/// it is typed outside a reading, where they do what they are told for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Registering {
+    /// Leaves the registration without registering.
+    pub cancel: Option<Chord>,
+    /// Pastes into the text to register.
+    pub paste: Option<Chord>,
+}
+
 /// What the host learns from an event, in the order it happened.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Effect {
@@ -83,5 +94,11 @@ pub struct Output {
     pub indicator: Option<Mode>,
     /// A key the host sends to the application in place of the one pressed.
     pub send: Option<Chord>,
+    /// Whether the host is to read the text on the clipboard and give it
+    /// with [`crate::Core::paste`]: the core reads nothing itself.
+    pub paste: bool,
+    /// Set while a word is being registered, for the host to show near the
+    /// cursor.
+    pub registering: Option<Registering>,
     pub effects: Vec<Effect>,
 }

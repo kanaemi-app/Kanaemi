@@ -131,6 +131,9 @@ pub enum Action {
     /// Take the kana just typed without a reading back to a reading; in a
     /// reading taken back so and left as it was, commit its first kana.
     RereadKana,
+    /// Put the text on the clipboard into the text to register, asked of the
+    /// host with [`crate::Output::paste`].
+    Paste,
 }
 
 /// Where a key is pressed, which decides the list of bindings it is looked up in.
@@ -403,7 +406,14 @@ impl Default for Bindings {
             key(Key::Tab, shift, CompletePrevious),
         ];
         // In the text to register, ABC mode types letters into it and kana
-        // mode comes back to kana.
+        // mode comes back to kana. Ctrl+Y pastes as Emacs yanks, and Ctrl+V as
+        // Windows and Linux paste, on every OS; Ctrl+Y comes first, as the
+        // key shown for pasting. Cmd+V does not, as a macOS application
+        // pastes it from its menu as well.
+        let pasting = [
+            key(Key::Char('y'), ctrl, Paste),
+            key(Key::Char('v'), ctrl, Paste),
+        ];
         let registration = [
             &deciding[..],
             &editing,
@@ -412,6 +422,7 @@ impl Default for Bindings {
             &to_kana,
             &[on],
             &[begin],
+            &pasting,
         ]
         .concat();
         let picking: Vec<Binding> = (0..PAGE_LEN as u8)

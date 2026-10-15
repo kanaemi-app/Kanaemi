@@ -155,6 +155,21 @@ pub fn place(caret: Rect, size: Size, screen: Rect) -> (f64, f64) {
     (caret.x.min(right).max(screen.x), y.min(top).max(screen.y))
 }
 
+/// Where a window of `size` goes as [`place`] puts it, but above the line
+/// first, below it when there is no room above: the hint shown while a word
+/// is registered, leaving below the line to the mode indicator.
+pub fn place_above(caret: Rect, size: Size, screen: Rect) -> (f64, f64) {
+    let above = caret.y + caret.height + CARET_GAP;
+    let y = if above + size.height <= screen.y + screen.height {
+        above
+    } else {
+        caret.y - CARET_GAP - size.height
+    };
+    let top = screen.y + screen.height - size.height;
+    let right = screen.x + screen.width - size.width;
+    (caret.x.min(right).max(screen.x), y.min(top).max(screen.y))
+}
+
 /// NSPopUpMenuWindowLevel: above ordinary windows, as Input Method Kit's panel.
 pub const MENU_LEVEL: isize = 101;
 
@@ -564,6 +579,19 @@ mod tests {
             height: 790.0,
         };
         assert_eq!(place(caret(300.0, 50.0), tall, SCREEN).1, 10.0);
+    }
+
+    #[test]
+    fn a_hint_goes_above_the_caret_line_or_below_without_room_and_stays_on_the_screen() {
+        assert_eq!(
+            place_above(caret(300.0, 400.0), WINDOW, SCREEN),
+            (300.0, 400.0 + 20.0 + CARET_GAP)
+        );
+        assert_eq!(
+            place_above(caret(300.0, 750.0), WINDOW, SCREEN),
+            (300.0, 750.0 - CARET_GAP - 100.0)
+        );
+        assert_eq!(place_above(caret(950.0, 400.0), WINDOW, SCREEN).0, 800.0);
     }
 
     fn widths(number: f64, surface: f64, source: f64) -> RowWidths {

@@ -8,7 +8,7 @@ use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
 use kanaemi_core::{Chord, Event, Key, Mode, Modifiers, Output};
-use kanaemi_runtime::{Access, Field, Profile};
+use kanaemi_runtime::{Access, Field, Profile, registration_hint};
 use windows::Win32::Foundation::*;
 use windows::Win32::System::SystemInformation::GetTickCount64;
 use windows::Win32::System::Threading::GetCurrentThreadId;
@@ -29,7 +29,7 @@ use crate::listing::Page;
 use crate::per_thread::PerThread;
 use crate::pipe::{self, PipeSink};
 use crate::ui_element::{CandidateList, Listed};
-use crate::{candidates, indicator, input_scope, remote};
+use crate::{candidates, hint, indicator, input_scope, remote};
 
 thread_local! {
     /// The settings and the engine every field of this thread shares, while
@@ -176,6 +176,8 @@ struct Edit {
     candidates: Option<Page>,
     /// The mode to show near the caret, after it changed.
     indicator: Option<Mode>,
+    /// The registration hint to show by the caret; `None` hides it.
+    hint: Option<String>,
 }
 
 #[implement(ITfEditSession)]
@@ -354,6 +356,10 @@ impl Session {
         }
         if let Some(mode) = edit.indicator {
             indicator::show(mode, self.place(ec, owner), owner);
+        }
+        match edit.hint {
+            Some(text) => hint::show(&text, self.place(ec, owner), owner),
+            None => hint::hide(),
         }
         Ok(())
     }
@@ -547,6 +553,7 @@ impl State {
         let writes = output.commit.is_some() || !output.preedit.is_empty() || composing || pending;
         if !writes {
             self.end_list();
+            hint::hide();
         }
         if !writes && output.indicator.is_none() {
             return;
@@ -559,6 +566,7 @@ impl State {
             preedit: output.preedit.clone(),
             candidates: output.candidates.as_ref().map(Page::new),
             indicator: output.indicator,
+            hint: hint::wanted(output).map(registration_hint),
         };
         self.edits.borrow_mut().push_back((context.clone(), edit));
         let session: ITfEditSession = Session {
@@ -612,7 +620,11 @@ impl State {
     fn focus_in(self: &Rc<Self>, context: Option<&ITfContext>) {
         *self.focused.borrow_mut() = context.cloned();
         if self.field.borrow().is_none() {
-            *self.field.borrow_mut() = with_profile(|profile| Field::new(profile));
+            *self.field.borrow_mut() = with_profile(|profile| {
+                let mut field = Field::new(profile);
+                field.set_clipboard(crate::clipboard::read);
+                field
+            });
             // The text service runs inside the application it serves.
             let exe = std::env::current_exe().ok();
             if let Some(field) = self.field.borrow_mut().as_mut()
@@ -666,6 +678,7 @@ impl State {
         *self.focused.borrow_mut() = None;
         self.dispatch(Event::FocusOut, context, false);
         indicator::hide();
+        hint::hide();
     }
 
     /// A context was pushed onto a document's stack, or `popped` off it.
@@ -908,6 +921,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
             state.dispatch(Event::FocusOut, context.as_ref(), false);
             state.end_list();
             indicator::hide();
+            hint::hide();
             let thread_mgr = state.thread_mgr.borrow_mut().take();
             if let Some(thread_mgr) = &thread_mgr {
                 if let Ok(keystrokes) = thread_mgr.cast::<ITfKeystrokeMgr>() {
@@ -1016,6 +1030,7 @@ impl ITfCompositionSink_Impl for TextService_Impl {
                 }
             }
             state.end_list();
+            hint::hide();
             let Some(output) = state.handle(Event::Flush) else {
                 return Ok(());
             };
@@ -1083,9 +1098,11 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
                 if self.state.element.borrow().is_some() {
                     self.state.listed.borrow().draw();
                 }
+                hint::reveal();
             } else {
                 candidates::hide();
                 indicator::hide();
+                hint::conceal();
             }
             Ok(())
         })

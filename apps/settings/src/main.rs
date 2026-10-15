@@ -44,6 +44,69 @@ use store::Store;
 
 const STYLE: &str = include_str!("../assets/style.css");
 
+/// Dioxus turns the context menu off on the document in a release build,
+/// where the menu would offer to reload the page. A field to type in keeps
+/// its own, to cut, copy and paste: the listener on the window runs first
+/// and stops the event before the document sees it.
+const EDIT_MENU: &str = r#"
+window.addEventListener('contextmenu', function (e) {
+  var t = e.target;
+  if (t && (t.isContentEditable || t.matches('textarea, input:not([type]), input[type=text], input[type=search], input[type=number]'))) {
+    e.stopPropagation();
+  }
+}, true);
+"#;
+
+/// macOS sends Cmd+X, C, V, A and Z to a field only through the items of
+/// the menu bar. Elsewhere the web view takes those keys itself, and a menu
+/// bar would sit in the window.
+#[cfg(target_os = "macos")]
+fn menu() -> Option<dioxus::desktop::muda::Menu> {
+    use dioxus::desktop::muda::{Menu, PredefinedMenuItem as Item, Submenu};
+
+    let app = Submenu::with_items(
+        "かなえみ設定",
+        true,
+        &[
+            &Item::hide(Some("かなえみ設定を非表示")),
+            &Item::hide_others(Some("ほかを非表示")),
+            &Item::show_all(Some("すべてを表示")),
+            &Item::separator(),
+            &Item::quit(Some("かなえみ設定を終了")),
+        ],
+    )
+    .ok()?;
+    let edit = Submenu::with_items(
+        "編集",
+        true,
+        &[
+            &Item::undo(Some("取り消す")),
+            &Item::redo(Some("やり直す")),
+            &Item::separator(),
+            &Item::cut(Some("カット")),
+            &Item::copy(Some("コピー")),
+            &Item::paste(Some("ペースト")),
+            &Item::select_all(Some("すべてを選択")),
+        ],
+    )
+    .ok()?;
+    let window = Submenu::with_items(
+        "ウインドウ",
+        true,
+        &[
+            &Item::minimize(Some("しまう")),
+            &Item::close_window(Some("閉じる")),
+        ],
+    )
+    .ok()?;
+    Menu::with_items(&[&app, &edit, &window]).ok()
+}
+
+#[cfg(not(target_os = "macos"))]
+fn menu() -> Option<dioxus::desktop::muda::Menu> {
+    None
+}
+
 fn main() {
     // How the install scripts learn the version to write into the bundle and
     // the IBus component.
@@ -57,7 +120,10 @@ fn main() {
         // do, and short enough for a laptop screen of 900 points.
         .with_inner_size(LogicalSize::new(1080.0, 780.0))
         .with_min_inner_size(LogicalSize::new(720.0, 480.0));
-    let config = Config::new().with_window(window).with_menu(None);
+    let config = Config::new()
+        .with_window(window)
+        .with_menu(menu())
+        .with_custom_head(format!("<script>{EDIT_MENU}</script>"));
     // The logo build.rs compiled in, which the shell shows for the program;
     // Dioxus's own icon otherwise.
     #[cfg(windows)]

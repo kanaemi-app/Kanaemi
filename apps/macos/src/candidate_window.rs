@@ -344,7 +344,7 @@ fn ns_rect(rect: Rect) -> NSRect {
     )
 }
 
-fn rect(rect: NSRect) -> Rect {
+pub(crate) fn rect(rect: NSRect) -> Rect {
     Rect {
         x: rect.origin.x,
         y: rect.origin.y,
@@ -568,7 +568,7 @@ fn arrange(window: &Window, mtm: MainThreadMarker) {
 }
 
 /// The part of the screen the caret is on that windows may use.
-fn screen_of(caret: Rect, mtm: MainThreadMarker) -> Rect {
+pub(crate) fn screen_of(caret: Rect, mtm: MainThreadMarker) -> Rect {
     let on = |frame: NSRect| {
         (frame.origin.x..frame.origin.x + frame.size.width).contains(&caret.x)
             && (frame.origin.y..frame.origin.y + frame.size.height).contains(&caret.y)

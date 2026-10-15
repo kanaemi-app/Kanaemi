@@ -11,8 +11,11 @@
 //! and `CANDIDATES` (report whether that window of Kanaemi shows), `WINDOWS`
 //! (where each candidate window is and what owns it), `SIBLINGS` (the
 //! top-level windows of the process showing candidates, with their z-order
-//! bands), `PAUSE` (four seconds, for a screenshot), or text to type (each
-//! character with the keys the keyboard layout types it with).
+//! bands), `HINT` (whether the registration hint shows, and where), `KANA`
+//! (the Hiragana key, which a slow machine taps more surely than a Shift),
+//! `CLIP=` and text (puts the text on the clipboard), `TEXT` (what Notepad
+//! holds by then), `PAUSE` (four seconds, for a screenshot), or text to type
+//! (each character with the keys the keyboard layout types it with).
 //!
 //! It has to run on the interactive desktop, where SendInput reaches the
 //! windows on the screen; a remote shell has none. With vitro:
@@ -133,6 +136,36 @@ mod drive {
                 Some(LPARAM(empty.as_ptr() as isize)),
             )
         };
+    }
+
+    fn set_clipboard(text: &str) -> Result<()> {
+        use windows::Win32::System::DataExchange::*;
+        use windows::Win32::System::Memory::*;
+        use windows::Win32::System::Ole::CF_UNICODETEXT;
+
+        let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
+        unsafe {
+            OpenClipboard(None)?;
+            let set = (|| {
+                EmptyClipboard()?;
+                let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
+                let start = GlobalLock(memory) as *mut u16;
+                if start.is_null() {
+                    return Err(Error::from(E_FAIL));
+                }
+                std::ptr::copy_nonoverlapping(wide.as_ptr(), start, wide.len());
+                let _ = GlobalUnlock(memory);
+                // The clipboard owns the memory once it holds it; until then
+                // it is the driver's to free.
+                let set = SetClipboardData(u32::from(CF_UNICODETEXT.0), Some(HANDLE(memory.0)));
+                if set.is_err() {
+                    let _ = GlobalFree(Some(memory));
+                }
+                set.map(|_| ())
+            })();
+            let _ = CloseClipboard();
+            set
+        }
     }
 
     pub fn main() {
@@ -384,6 +417,21 @@ mod drive {
                 )),
                 "CANDIDATES" => {
                     report.push(format!("candidates: {}", visible(w!("KanaemiCandidates"))))
+                }
+                "HINT" => {
+                    report.push(format!("hint: {}", visible(w!("KanaemiRegistrationHint"))));
+                    report.extend(describe(w!("KanaemiRegistrationHint")));
+                }
+                "KANA" => tap(VK_DBE_HIRAGANA),
+                "TEXT" => {
+                    if let Some(ed) = found {
+                        report.push(format!("text now: [{}]", text_of(ed)));
+                    }
+                }
+                clip if clip.starts_with("CLIP=") => {
+                    if let Err(e) = set_clipboard(&clip["CLIP=".len()..]) {
+                        report.push(format!("clipboard: {e:?}"));
+                    }
                 }
                 "WINDOWS" => report.extend(describe(w!("KanaemiCandidates"))),
                 "SIBLINGS" => report.extend(siblings(w!("KanaemiCandidates"))),

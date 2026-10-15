@@ -12,6 +12,7 @@ pub const INFO_CIRCLE: &str = r#"<path d="M3 12a9 9 0 1 0 18 0a9 9 0 0 0 -18 0"/
 pub const GRIP_VERTICAL: &str = r#"<path d="M8 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M8 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M8 19a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M14 5a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M14 12a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/><path d="M14 19a1 1 0 1 0 2 0a1 1 0 1 0 -2 0"/>"#;
 pub const ARROW_RIGHT: &str =
     r#"<path d="M5 12l14 0"/><path d="M13 18l6 -6"/><path d="M13 6l6 6"/>"#;
+pub const ALERT_TRIANGLE: &str = r#"<path d="M12 9v4"/><path d="M10.363 3.591l-8.106 13.534a1.914 1.914 0 0 0 1.636 2.871h16.214a1.914 1.914 0 0 0 1.636 -2.87l-8.106 -13.536a1.914 1.914 0 0 0 -3.274 0z"/><path d="M12 16h.01"/>"#;
 pub const PLUS: &str = r#"<path d="M12 5l0 14"/><path d="M5 12l14 0"/>"#;
 pub const X: &str = r#"<path d="M18 6l-12 12"/><path d="M6 6l12 12"/>"#;
 pub const FOLDER_OPEN: &str = r#"<path d="M5 19l2.757 -7.351a1 1 0 0 1 .936 -.649h12.307a1 1 0 0 1 .986 1.164l-.996 5.211a2 2 0 0 1 -1.964 1.625h-14.026a2 2 0 0 1 -2 -2v-11a2 2 0 0 1 2 -2h4l3 3h7a2 2 0 0 1 2 2v2"/>"#;
