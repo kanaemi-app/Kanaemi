@@ -36,8 +36,8 @@ use objc2_input_method_kit::{IMKInputController, IMKServer};
 use crate::keys::{Keys, POSTED_MARK, RawEvent, RawKind, key_to_send, utf16_offset};
 use crate::posted::{self, Posted, Purpose};
 use crate::{
-    accessibility, candidate_window, handled, hint, indicator, input_monitoring, key_tap, meaning,
-    secure_input,
+    accessibility, candidate_window, fixed, handled, hint, indicator, input_monitoring, key_tap,
+    meaning, secure_input,
 };
 
 const CONNECTION_NAME: &str = "io.github.kanaemi-app.inputmethod.Kanaemi_Connection";
@@ -270,6 +270,9 @@ fn read_clipboard() -> Option<String> {
 pub struct Ivars {
     field: RefCell<Field>,
     marked: Cell<bool>,
+    /// The preedit last marked: a client asked to commit may no longer tell
+    /// what it marks.
+    shown: RefCell<String>,
 }
 
 define_class!(
@@ -290,6 +293,7 @@ define_class!(
             let this = this.set_ivars(Ivars {
                 field: RefCell::new(new_field()),
                 marked: Cell::new(false),
+                shown: RefCell::new(String::new()),
             });
             unsafe { msg_send![super(this), initWithServer: server, delegate: delegate, client: client] }
         }
@@ -414,7 +418,22 @@ define_class!(
         #[unsafe(method(commitComposition:))]
         fn commit_composition(&self, sender: Option<&AnyObject>) {
             guarded((), || {
+                let ivars = self.ivars();
+                let range = sender.and_then(marked_range);
+                let shown = ivars.marked.get().then(|| ivars.shown.borrow().clone());
+                let commit = ivars.field.borrow().preview(Event::Flush).commit;
                 self.dispatch(Event::Flush, sender);
+                if let (Some(client), Some(range), Some(shown), Some(commit)) =
+                    (sender, range, shown, commit)
+                {
+                    FIXED.set(Some(Fixed {
+                        client: client.retain(),
+                        range,
+                        shown,
+                        commit,
+                    }));
+                    DispatchQueue::main().exec_async(|| guarded((), replace_fixed));
+                }
             });
         }
 
@@ -674,6 +693,7 @@ impl KanaemiController {
                 utf16_offset(&output.preedit, output.cursor),
             );
             ivars.marked.set(!output.preedit.is_empty());
+            ivars.shown.replace(output.preedit.clone());
         }
         match &output.candidates {
             Some(view) => candidate_window::show(view, client),
@@ -710,6 +730,45 @@ fn set_marked_text(client: &AnyObject, text: &str, cursor_utf16: usize) {
     let _: () = unsafe {
         msg_send![client, setMarkedText: &*text, selectionRange: selection, replacementRange: nowhere]
     };
+}
+
+/// The marked text a client was showing as it asked for the composition to be
+/// committed, and what was committed for it.
+struct Fixed {
+    client: Retained<AnyObject>,
+    range: NSRange,
+    shown: String,
+    commit: String,
+}
+
+thread_local! {
+    static FIXED: Cell<Option<Fixed>> = const { Cell::new(None) };
+}
+
+/// Where `client` has text marked.
+fn marked_range(client: &AnyObject) -> Option<NSRange> {
+    let range: NSRange = unsafe { msg_send![client, markedRange] };
+    (range.location != NSNotFound as usize && range.length > 0).then_some(range)
+}
+
+fn text_in(client: &AnyObject, range: NSRange) -> Option<String> {
+    let text: Option<Retained<NSAttributedString>> =
+        unsafe { msg_send![client, attributedSubstringFromRange: range] };
+    text.map(|text| text.string().to_string())
+}
+
+/// Puts what was committed in place of marked text the client turned into
+/// text as it was shown, once the client is done with what made it commit.
+fn replace_fixed() {
+    let Some(fixed) = FIXED.take() else { return };
+    let client = &*fixed.client;
+    let still_marked = marked_range(client).is_some();
+    let found = text_in(client, fixed.range).unwrap_or_default();
+    if fixed::left_as_shown(&fixed.shown, &found, still_marked) {
+        tracing::debug!(shown = %fixed.shown, commit = %fixed.commit, "marked text left as shown");
+        let text = NSString::from_str(&fixed.commit);
+        let _: () = unsafe { msg_send![client, insertText: &*text, replacementRange: fixed.range] };
+    }
 }
 
 /// Whether `client` has no text selected, only a caret.

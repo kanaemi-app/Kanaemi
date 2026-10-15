@@ -14,6 +14,7 @@ mod app;
 #[cfg(target_os = "macos")]
 mod candidate_window;
 mod candidates;
+mod fixed;
 mod handled;
 #[cfg(target_os = "macos")]
 mod hint;
