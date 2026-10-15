@@ -1,7 +1,10 @@
 //! Turns AppKit key events into core key events. Kept free of AppKit types so
 //! it builds and tests on any platform.
 
+use std::fmt;
+
 use kanaemi_core::{Chord, Key, KeyEvent, KeyKind, Modifiers};
+use kanaemi_runtime::{is_masked, masked};
 
 // NSEventModifierFlags.
 const SHIFT: usize = 1 << 17;
@@ -55,6 +58,60 @@ pub struct RawEvent<'a> {
     pub user_data: i64,
     /// A key-down sent again while the key is held.
     pub repeat: bool,
+}
+
+/// The event as the log tells it. A key typed as text is told only by the
+/// kind of its character: its key code would tell the character.
+impl fmt::Display for RawEvent<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        let kind = match self.kind {
+            RawKind::KeyDown => "key-down",
+            RawKind::KeyUp => "key-up",
+            RawKind::FlagsChanged => "flags-changed",
+            RawKind::Other => "other",
+        };
+        f.write_str(kind)?;
+        let text = self.characters_ignoring_modifiers.unwrap_or_default();
+        let types_text = text.chars().any(|c| !c.is_control() && !is_function_key(c));
+        let pressed = self.kind == RawKind::KeyDown && !self.repeat;
+        if types_text && !pressed {
+            // The modifiers may have changed since the press, and with them
+            // the character, which would tell the one the press masked.
+            f.write_str(" hidden")?;
+        } else {
+            let shortcut = pressed && self.flags & (CONTROL | COMMAND) != 0;
+            self.write_typed(f, text, shortcut)?;
+        }
+        write!(f, " flags={:#x} @{}", self.flags, self.time_ms)?;
+        if self.repeat {
+            f.write_str(" repeat")?;
+        }
+        match self.user_data {
+            0 => Ok(()),
+            POSTED_MARK => f.write_str(" posted"),
+            other => write!(f, " user_data={other:#x}"),
+        }
+    }
+}
+
+impl RawEvent<'_> {
+    /// The key code and the characters, masked unless a `shortcut`.
+    fn write_typed(&self, f: &mut fmt::Formatter<'_>, text: &str, shortcut: bool) -> fmt::Result {
+        // Option types a letter on a key that reads as a symbol without it.
+        let typed = self.characters.unwrap_or_default();
+        if shortcut || !(is_masked(text) || is_masked(typed)) {
+            write!(f, " code={}", self.key_code)?;
+        }
+        if let Some(characters) = self.characters {
+            let shown = if shortcut {
+                characters.to_owned()
+            } else {
+                masked(characters)
+            };
+            write!(f, " chars={shown:?}")?;
+        }
+        Ok(())
+    }
 }
 
 /// Remembers which modifier keys are down, because a `flagsChanged` event
@@ -588,6 +645,89 @@ mod tests {
 
     fn key_of(raw: RawEvent) -> Option<Key> {
         Keys::default().translate(raw).map(|e| e.key)
+    }
+
+    #[test]
+    fn a_key_typed_as_text_is_logged_without_its_code_or_character() {
+        assert_eq!(
+            down(40, 0, "k").to_string(),
+            "key-down chars=\"a\" flags=0x0 @7"
+        );
+        assert_eq!(
+            down(0, 0, "a").to_string(),
+            "key-down chars=\"a\" flags=0x0 @7"
+        );
+        assert_eq!(
+            down(2, SHIFT, "D").to_string(),
+            "key-down chars=\"A\" flags=0x20000 @7"
+        );
+    }
+
+    #[test]
+    fn a_key_typing_text_let_go_or_repeating_is_hidden_whatever_is_held() {
+        assert_eq!(
+            up(40, CONTROL, "k").to_string(),
+            "key-up hidden flags=0x40000 @7"
+        );
+        // 1 pressed, then Shift, then 1 let go.
+        assert_eq!(
+            up(18, SHIFT, "!").to_string(),
+            "key-up hidden flags=0x20000 @7"
+        );
+        let repeat = RawEvent {
+            repeat: true,
+            ..down(40, CONTROL, "k")
+        };
+        assert_eq!(
+            repeat.to_string(),
+            "key-down hidden flags=0x40000 @7 repeat"
+        );
+    }
+
+    #[test]
+    fn a_letter_typed_with_option_on_a_symbol_key_is_logged_without_its_code() {
+        let option = RawEvent {
+            characters: Some("æ"),
+            characters_ignoring_modifiers: Some("'"),
+            ..down(39, OPTION, "'")
+        };
+        assert_eq!(option.to_string(), "key-down chars=\"x\" flags=0x80000 @7");
+    }
+
+    #[test]
+    fn a_named_key_or_a_shortcut_is_logged_with_its_code() {
+        assert_eq!(
+            down(36, 0, "\r").to_string(),
+            "key-down code=36 chars=\"\\r\" flags=0x0 @7"
+        );
+        assert_eq!(
+            down(9, COMMAND, "v").to_string(),
+            "key-down code=9 chars=\"v\" flags=0x100000 @7"
+        );
+        assert_eq!(
+            flags_changed(56, SHIFT).to_string(),
+            "flags-changed code=56 flags=0x20000 @7"
+        );
+    }
+
+    #[test]
+    fn a_repeat_and_a_posted_key_say_so() {
+        let repeat = RawEvent {
+            repeat: true,
+            ..down(51, 0, "\u{8}")
+        };
+        assert_eq!(
+            repeat.to_string(),
+            "key-down code=51 chars=\"\\u{8}\" flags=0x0 @7 repeat"
+        );
+        let posted = RawEvent {
+            user_data: POSTED_MARK,
+            ..down(36, 0, "\r")
+        };
+        assert_eq!(
+            posted.to_string(),
+            "key-down code=36 chars=\"\\r\" flags=0x0 @7 posted"
+        );
     }
 
     fn up(key_code: u16, flags: usize, characters: &str) -> RawEvent<'_> {

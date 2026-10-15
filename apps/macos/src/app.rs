@@ -13,7 +13,7 @@ use std::time::Duration;
 use block2::RcBlock;
 use dispatch2::{DispatchQueue, DispatchTime};
 use kanaemi_core::{Chord, Event, Key, KeyEvent, KeyKind, Modifiers, Output};
-use kanaemi_runtime::{Field, Profile};
+use kanaemi_runtime::{Field, LoggedChord, Profile, masked};
 use objc2::rc::{Allocated, Retained};
 use objc2::runtime::{AnyObject, Bool, NSObject};
 use objc2::{
@@ -484,13 +484,14 @@ impl KanaemiController {
             }),
             repeat: typed && event.isARepeat(),
         };
-        tracing::debug!(?raw, "key");
+        tracing::info!(%raw, "key");
         // A key the IME posted goes on to the application unseen by the core:
         // it is what the core asked for. The release of a key never reaches
         // the IME, so the press is what tells the application has it.
         if raw.kind == RawKind::KeyDown
             && let Some(purpose) = POSTED.with_borrow_mut(|p| p.take(raw.key_code, raw.time_ms))
         {
+            tracing::info!(?purpose, "posted key came back; passed on");
             if purpose == Purpose::Erasing && !POSTED.with_borrow(Posted::erasing) {
                 erased_later();
             }
@@ -528,6 +529,7 @@ impl KanaemiController {
             self.release_lifted(sender, now_ms());
         }
         watch_keys();
+        tracing::info!(consumed, "key answered");
         Bool::new(consumed)
     }
 
@@ -541,6 +543,7 @@ impl KanaemiController {
             key: Key::Backspace,
             mods: Modifiers::default(),
         };
+        tracing::info!(presses, "erasing text");
         if (0..presses).all(|_| send_key(backspace, Purpose::Erasing)) {
             give_up_erasing_later();
             return true;
@@ -606,7 +609,6 @@ impl KanaemiController {
         let handled = catch_unwind(AssertUnwindSafe(|| {
             let marked_before = ivars.marked.get();
             let output = with_profile(|profile| ivars.field.borrow_mut().handle(profile, event));
-            tracing::debug!(?event, ?output, "handled");
             let pressed = matches!(
                 event,
                 Event::Key(KeyEvent {
@@ -631,6 +633,7 @@ impl KanaemiController {
                 && !erasing()
                 && selection_is_empty(client)
             {
+                tracing::info!("marked through; what it erases or sends waits for the mark to go");
                 self.draw(&output, client);
                 set_marked_text(client, handled::UNSEEN, 0);
                 UNSEEN.with_borrow_mut(|unseen| {
@@ -765,7 +768,11 @@ fn replace_fixed() {
     let still_marked = marked_range(client).is_some();
     let found = text_in(client, fixed.range).unwrap_or_default();
     if fixed::left_as_shown(&fixed.shown, &found, still_marked) {
-        tracing::debug!(shown = %fixed.shown, commit = %fixed.commit, "marked text left as shown");
+        tracing::info!(
+            shown = %masked(&fixed.shown),
+            commit = %masked(&fixed.commit),
+            "marked text left as shown; replaced"
+        );
         let text = NSString::from_str(&fixed.commit);
         let _: () = unsafe { msg_send![client, insertText: &*text, replacementRange: fixed.range] };
     }
@@ -799,8 +806,10 @@ fn send_key(chord: Chord, purpose: Purpose) -> bool {
         });
         return false;
     }
+    tracing::info!(chord = %LoggedChord(chord), code, ?purpose, "key sent");
     for down in [true, false] {
         let Some(event) = CGEvent::new_keyboard_event(None, code, down) else {
+            tracing::warn!("key not made to send");
             return false;
         };
         CGEvent::set_flags(Some(&event), CGEventFlags(flags));
@@ -927,7 +936,12 @@ pub fn run() {
         guarded((), || candidate_window::meaning_found(surface, meaning));
     });
 
-    tracing::info!(version = kanaemi_core::VERSION, "kanaemi started");
+    tracing::info!(
+        version = kanaemi_core::VERSION,
+        os = %NSProcessInfo::processInfo().operatingSystemVersionString(),
+        arch = std::env::consts::ARCH,
+        "kanaemi started"
+    );
     NSApplication::sharedApplication(mtm).run();
     drop(server);
 }
