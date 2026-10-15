@@ -210,7 +210,7 @@ pub unsafe extern "C" fn kanaemi_fcitx5_new(
                 .canonicalize()
                 .unwrap_or_else(|_| library.to_owned()),
         };
-        tracing::info!(version = kanaemi_core::VERSION, "kanaemi started");
+        kanaemi_linux::log_started("fcitx5");
         Box::into_raw(Box::new(addon))
     })
 }
