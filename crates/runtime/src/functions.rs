@@ -6,9 +6,10 @@ use std::path::{Path, PathBuf};
 use std::rc::Rc;
 
 use kanaemi_config::{BUILTIN_PREFIX, FUNCTIONS_DIR};
-use kanaemi_functions::{EXTENSION, LuauFunctions, Without};
+use kanaemi_functions::{EXTENSION, FunctionError, LuauFunctions, Without};
 
 use crate::dictionaries::{FileStamp, file_stamp};
+use crate::masked;
 
 /// Every file of the functions and their modules, with its stamp.
 pub(crate) type Stamp = Vec<(PathBuf, FileStamp)>;
@@ -80,6 +81,72 @@ pub(crate) fn log(functions: &LuauFunctions) {
         );
     }
     for error in functions.take_errors() {
-        tracing::warn!(%error, "function skipped");
+        match error {
+            FunctionError::Failed { name, message } => tracing::warn!(
+                function = name,
+                error = %masked_failure(&message),
+                "function skipped"
+            ),
+            error => tracing::warn!(%error, "function skipped"),
+        }
+    }
+}
+
+/// What a function failed with, its own words masked whole: they may say
+/// what the function was given, which the user typed. Where it failed and
+/// the calls that led there stay.
+fn masked_failure(message: &str) -> String {
+    let (said, trace) = message
+        .find("\nstack traceback:")
+        .map_or((message, ""), |at| message.split_at(at));
+    // Luau puts where it failed first, as `file.luau:line: `.
+    let words = said
+        .match_indices(": ")
+        .map(|(at, _)| at + 2)
+        .find(|&at| {
+            said[..at - 2].rsplit_once(':').is_some_and(|(file, line)| {
+                file.ends_with(EXTENSION) && line.bytes().all(|b| b.is_ascii_digit())
+            })
+        })
+        .unwrap_or(0);
+    format!("{}{}{trace}", &said[..words], masked(&said[words..]))
+}
+
+#[cfg(test)]
+mod tests {
+    use kanaemi_engine::{Call, Functions};
+
+    use super::*;
+    use crate::captured::logged;
+
+    #[test]
+    fn what_a_function_failed_on_is_logged_masked() {
+        let dir = std::env::temp_dir().join(format!(
+            "kanaemi-runtime-functions-{}-error",
+            std::process::id()
+        ));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join(FUNCTIONS_DIR)).unwrap();
+        std::fs::write(
+            dir.join(FUNCTIONS_DIR).join("leak.luau"),
+            "return function(source) error(\"no \" .. source) end",
+        )
+        .unwrap();
+        let functions = open(&dir, &[]);
+        functions.call(&Call {
+            name: "leak",
+            source: "secret\u{3088}\u{307f}",
+            argument: None,
+        });
+
+        let log = logged(|| log(&functions));
+
+        assert!(log.contains("function skipped"), "{log}");
+        assert!(
+            log.contains("leak.luau:1: aa "),
+            "where it failed stays: {log}"
+        );
+        assert!(!log.contains("secret"), "{log}");
+        assert!(!log.contains('\u{3088}'), "{log}");
     }
 }

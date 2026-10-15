@@ -4,6 +4,8 @@
 //! profile every field shares. A platform's input method keeps only what
 //! talks to its own input method framework.
 
+#[cfg(test)]
+mod captured;
 mod control;
 mod dictionaries;
 mod erase;
@@ -11,6 +13,7 @@ mod field;
 mod functions;
 mod hint;
 mod logging;
+mod masked;
 mod profile;
 mod settings;
 mod shared;
@@ -20,6 +23,7 @@ pub use erase::*;
 pub use field::*;
 pub use hint::*;
 pub use logging::*;
+pub use masked::*;
 pub use profile::*;
 // A sandboxed profile takes one, so a platform needs no other crate to make it.
 pub use kanaemi_engine::LineSink;
