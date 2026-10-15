@@ -11,3 +11,8 @@ kanaemi-core.workspace = true
 # The keys to erase text are counted there.
 kanaemi-runtime.workspace = true
 tracing = { version = "0.1", features = ["release_max_level_info"] }
+
+# Neither IBus nor Fcitx5 gives the input method the clipboard. X11 and the
+# Wayland compositors that let a program without a window read it.
+[target.'cfg(target_os = "linux")'.dependencies]
+arboard = { version = "3.6.1", default-features = false, features = ["wayland-data-control"] }

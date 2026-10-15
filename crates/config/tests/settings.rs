@@ -50,6 +50,16 @@ fn ctrl(c: char) -> Chord {
     }
 }
 
+fn cmd(c: char) -> Chord {
+    Chord {
+        key: Key::Char(c),
+        mods: Modifiers {
+            cmd: true,
+            ..Default::default()
+        },
+    }
+}
+
 fn plain(key: Key) -> Chord {
     Chord {
         key,
@@ -351,6 +361,7 @@ fn ctrl_n_and_ctrl_p_turn_the_page_of_a_list_shown_and_convert_nothing() {
 fn page_keys_are_bound_where_a_list_is_shown_and_nowhere_else() {
     assert_eq!(parse_action("@next-page"), Some(Action::NextPage));
     assert_eq!(parse_action("@previous-page"), Some(Action::PreviousPage));
+    assert_eq!(parse_action("@paste"), Some(Action::Paste));
     let (settings, problems) = load(
         "[keys.candidates]\n\"page-down\" = \"@next-page\"\n\
          [keys.completion]\n\"page-up\" = \"@previous-page\"",
@@ -618,6 +629,59 @@ fn the_kana_key_is_bound_in_the_registration_table_beside_the_table_of_kana_mode
         target(&bindings.registration_kana, ctrl('k')),
         Some(Action::Commit)
     );
+}
+
+#[test]
+fn the_key_an_application_pastes_with_itself_is_told_of_when_bound_to_paste() {
+    let (settings, problems) = Settings::load(
+        "[keys.registration]\n\"cmd+v\" = \"@paste\"\n\
+         [keys.registration.kana-mode]\n\"cmd+v\" = \"@paste\"\n\"ctrl+v\" = \"@paste\"\n",
+        Path::new("/nonexistent"),
+    );
+
+    let problems: Vec<_> = problems.into_iter().map(|p| (p.item, p.kind)).collect();
+    if cfg!(target_os = "macos") {
+        assert_eq!(
+            problems,
+            [
+                (
+                    "keys.registration.cmd+v".to_owned(),
+                    ProblemKind::PastedByApplication
+                ),
+                (
+                    "keys.registration.kana-mode.cmd+v".to_owned(),
+                    ProblemKind::PastedByApplication
+                ),
+            ]
+        );
+    } else {
+        assert_eq!(problems, []);
+    }
+    assert_eq!(
+        settings.registration_tables.shared,
+        [(cmd('v'), Gesture::Press, Some(Action::Paste))],
+        "the binding is kept: it is the user's to change"
+    );
+}
+
+/// The host pastes once the key is handled, after the character a held key
+/// types, so pasting on a held key would paste in the wrong place.
+#[test]
+fn paste_cannot_be_bound_to_a_key_held() {
+    let (settings, problems) = Settings::load(
+        "[keys.registration]\n\"space#hold\" = \"@paste\"\n",
+        Path::new("/nonexistent"),
+    );
+
+    let problems: Vec<_> = problems.into_iter().map(|p| (p.item, p.kind)).collect();
+    assert_eq!(
+        problems,
+        [(
+            "keys.registration.space#hold".to_owned(),
+            ProblemKind::ActionNotHeld("@paste".to_owned())
+        )]
+    );
+    assert!(settings.registration_tables.shared.is_empty());
 }
 
 #[test]
@@ -985,6 +1049,10 @@ fn each_table_offers_only_the_actions_that_work_there() {
     assert!(actions("reading").contains(&Action::RereadKana));
     assert!(!actions("candidates").contains(&Action::RereadKana));
     assert!(!actions("registration").contains(&Action::RereadKana));
+    assert!(actions("registration").contains(&Action::Paste));
+    for table in ["reading", "completion", "candidates", "kana"] {
+        assert!(!actions(table).contains(&Action::Paste), "{table}");
+    }
     assert_eq!(actions("abc"), [Action::Abc, Action::Kana]);
     assert_eq!(actions(APPLICATION_TABLE), []);
 }

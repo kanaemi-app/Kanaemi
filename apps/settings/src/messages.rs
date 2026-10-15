@@ -36,6 +36,9 @@ pub fn describe(kind: &ProblemKind) -> String {
             format!("「{name}」という機能はありません（@next のように書きます）")
         }
         ProblemKind::ActionNotHere(name) => format!("「{name}」はこの場面では使えません"),
+        ProblemKind::ActionNotHeld(name) => {
+            format!("「{name}」は押さえたままには割り当てられません")
+        }
         ProblemKind::UnknownBuiltinDictionary(name) => {
             format!("「{name}」という組み込みの辞書はありません")
         }
@@ -44,6 +47,9 @@ pub fn describe(kind: &ProblemKind) -> String {
         }
         ProblemKind::OutsideFolder(name) => {
             format!("「{name}」はフォルダの外を指しています（フォルダの中の名前で書きます）")
+        }
+        ProblemKind::PastedByApplication => {
+            "このキーはアプリ自身が貼り付けに使うので、登録する語には貼れません（アプリが未確定文字列の外に貼ります）。Ctrl+Y など別のキーにしてください".to_owned()
         }
     }
 }

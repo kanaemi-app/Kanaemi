@@ -14,7 +14,9 @@ pub enum Signal {
     /// The page, the highlighted one, and what the auxiliary text tells of
     /// it, if anything.
     Candidates(Vec<Item>, usize, Option<String>),
-    HideCandidates,
+    /// No candidates, and what the auxiliary text tells instead, if
+    /// anything.
+    HideCandidates(Option<String>),
     /// Text just before the caret to erase, ahead of what follows.
     Erase(String),
     Forward(u32, u32),
@@ -46,7 +48,8 @@ impl Reply {
 }
 
 /// What to tell the framework to show `output`. The mode is shown by the caret only
-/// where the panel shows it well (`indicator`).
+/// where the panel shows it well (`indicator`). While a word is registered
+/// the auxiliary text tells so, unless candidates are listed.
 pub fn reply(output: &Output, indicator: bool) -> Reply {
     let mut signals = Vec::new();
     if let Some(text) = &output.erase {
@@ -58,7 +61,7 @@ pub fn reply(output: &Output, indicator: bool) -> Reply {
     signals.push(Signal::Preedit(output.preedit.clone(), output.cursor));
     signals.push(match &output.candidates {
         Some(view) => Signal::Candidates(items(&view.items), view.selected, aside(view)),
-        None => Signal::HideCandidates,
+        None => Signal::HideCandidates(output.registering.map(kanaemi_runtime::registration_hint)),
     });
     if let Some(mode) = output.indicator
         && indicator
@@ -130,7 +133,7 @@ pub fn mode_label(mode: Mode) -> &'static str {
 
 #[cfg(test)]
 mod tests {
-    use kanaemi_core::{Chord, Key, Modifiers};
+    use kanaemi_core::{Chord, Key, Modifiers, Registering};
 
     use super::*;
 
@@ -145,6 +148,8 @@ mod tests {
             mode: Mode::Kana,
             indicator: None,
             send: None,
+            paste: false,
+            registering: None,
             effects: Vec::new(),
         }
     }
@@ -170,7 +175,7 @@ mod tests {
             [
                 Signal::Commit("漢字".to_owned()),
                 Signal::Preedit("›かな".to_owned(), 3),
-                Signal::HideCandidates,
+                Signal::HideCandidates(None),
             ]
         );
     }
@@ -291,6 +296,63 @@ mod tests {
         assert_eq!(
             shown(view(None)),
             Signal::Candidates(vec![item("工", None)], 0, Some("2 / 2".to_owned()))
+        );
+    }
+
+    fn ctrl(c: char) -> Chord {
+        Chord {
+            key: Key::Char(c),
+            mods: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+        }
+    }
+
+    #[test]
+    fn while_a_word_is_registered_the_aux_text_tells_so_and_the_key_that_pastes() {
+        let output = Output {
+            registering: Some(Registering {
+                cancel: None,
+                paste: Some(ctrl('y')),
+            }),
+            ..output()
+        };
+        assert_eq!(
+            reply(&output, false).signals[1],
+            Signal::HideCandidates(Some(
+                "辞書登録中　Ctrl+Y でクリップボードから貼り付け".to_owned()
+            ))
+        );
+    }
+
+    #[test]
+    fn outside_registering_no_candidates_leave_the_aux_text_empty() {
+        assert_eq!(
+            reply(&output(), false).signals[1],
+            Signal::HideCandidates(None)
+        );
+    }
+
+    #[test]
+    fn the_candidates_listed_while_registering_take_the_aux_text() {
+        let output = Output {
+            registering: Some(Registering {
+                cancel: None,
+                paste: Some(ctrl('y')),
+            }),
+            candidates: Some(CandidateView {
+                items: vec![candidate("漢字")],
+                selected: 0,
+                page: 0,
+                pages: 1,
+                more: Vec::new(),
+            }),
+            ..output()
+        };
+        assert_eq!(
+            reply(&output, false).signals[1],
+            Signal::Candidates(vec![item("漢字", None)], 0, None)
         );
     }
 

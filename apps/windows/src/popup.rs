@@ -15,7 +15,7 @@ use windows::Win32::Graphics::Gdi::{
 use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, IsWindow};
 use windows::core::Result;
 
-use crate::placement::{Rect, place};
+use crate::placement::{Rect, place, place_above};
 
 #[derive(Default)]
 pub(crate) struct Popup {
@@ -72,18 +72,32 @@ impl Popup {
 /// Where a popup of `size` goes by `at`, a screen rectangle of the text,
 /// kept on the monitor that shows the text.
 pub(crate) fn position(at: RECT, size: (i32, i32), gap: i32) -> (i32, i32) {
-    let rect = |r: RECT| Rect {
+    place(rect(at), size, gap, work_area(at))
+}
+
+/// Where a popup of `size` goes by `at` to stay off the line below it, kept
+/// on the monitor that shows the text.
+pub(crate) fn position_above(at: RECT, size: (i32, i32), gap: i32) -> (i32, i32) {
+    place_above(rect(at), size, gap, work_area(at))
+}
+
+fn rect(r: RECT) -> Rect {
+    Rect {
         left: r.left,
         top: r.top,
         right: r.right,
         bottom: r.bottom,
-    };
+    }
+}
+
+/// The part of the monitor showing `at` that windows may use.
+fn work_area(at: RECT) -> Rect {
     let monitor = unsafe { MonitorFromRect(&at, MONITOR_DEFAULTTONEAREST) };
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
-    let work = if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
+    if unsafe { GetMonitorInfoW(monitor, &mut info) }.as_bool() {
         rect(info.rcWork)
     } else {
         // No monitor to ask: leave the popup where the text is.
@@ -93,6 +107,5 @@ pub(crate) fn position(at: RECT, size: (i32, i32), gap: i32) -> (i32, i32) {
             right: i32::MAX / 2,
             bottom: i32::MAX / 2,
         }
-    };
-    place(rect(at), size, gap, work)
+    }
 }

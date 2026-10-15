@@ -85,12 +85,12 @@ impl Scene {
         match self {
             Self::Reading => !matches!(
                 action,
-                Forget | Pick(_) | UndoCommit | NextPage | PreviousPage
+                Forget | Pick(_) | UndoCommit | NextPage | PreviousPage | Paste
             ),
-            Self::Completion => !matches!(action, Forget | UndoCommit | RereadKana),
+            Self::Completion => !matches!(action, Forget | UndoCommit | RereadKana | Paste),
             Self::Candidates => !matches!(
                 action,
-                Delete | Left | Right | Home | End | UndoCommit | RereadKana
+                Delete | Left | Right | Home | End | UndoCommit | RereadKana | Paste
             ),
             Self::Registration(_) => matches!(
                 action,
@@ -105,6 +105,7 @@ impl Scene {
                     | Abc
                     | Kana
                     | Begin
+                    | Paste
             ),
             Self::Kana => matches!(action, Abc | Kana | Begin | UndoCommit | RereadKana),
             Self::Abc => matches!(action, Abc | Kana),
@@ -235,7 +236,7 @@ fn every_action() -> Vec<Action> {
         Action::Begin,
     ]);
     all.extend((0..PICKABLE).map(Action::Pick));
-    all.extend([Action::UndoCommit, Action::RereadKana]);
+    all.extend([Action::UndoCommit, Action::RereadKana, Action::Paste]);
     all
 }
 
@@ -273,6 +274,7 @@ pub fn format_action(action: Action) -> String {
         Action::RereadKana => "reread-kana".to_owned(),
         Action::NextPage => "next-page".to_owned(),
         Action::PreviousPage => "previous-page".to_owned(),
+        Action::Paste => "paste".to_owned(),
     };
     format!("@{name}")
 }
@@ -475,3 +477,74 @@ fn parse_key(name: &str) -> Option<Key> {
         _ => None,
     }
 }
+
+/// A key as written in the settings file, the way keyboards label it:
+/// `ctrl+h` is shown as `Ctrl+H`.
+pub fn key_label(text: &str) -> String {
+    if text.starts_with('@') {
+        return text.to_owned();
+    }
+    if let Some(key) = text.strip_suffix("#tap").filter(|k| !k.is_empty()) {
+        return format!("{} の単独押し", key_label(key));
+    }
+    if let Some(key) = text.strip_suffix("#hold").filter(|k| !k.is_empty()) {
+        return format!("{} を押さえたまま", key_label(key));
+    }
+    let mut parts = Vec::new();
+    let mut rest = text;
+    while let Some((modifier, key)) = rest.split_once('+')
+        && !key.is_empty()
+    {
+        parts.push(
+            match modifier {
+                "ctrl" => "Ctrl",
+                "cmd" => CMD,
+                "alt" => ALT,
+                "shift" => "Shift",
+                other => other,
+            }
+            .to_owned(),
+        );
+        rest = key;
+    }
+    parts.push(match rest {
+        "space" => "Space".to_owned(),
+        "enter" => "Enter".to_owned(),
+        "esc" => "Esc".to_owned(),
+        "backspace" => "Backspace".to_owned(),
+        "delete" => "Delete".to_owned(),
+        "left" => "←".to_owned(),
+        "right" => "→".to_owned(),
+        "up" => "↑".to_owned(),
+        "down" => "↓".to_owned(),
+        "home" => "Home".to_owned(),
+        "end" => "End".to_owned(),
+        "page-up" => "Page Up".to_owned(),
+        "page-down" => "Page Down".to_owned(),
+        "left-shift" => "左 Shift".to_owned(),
+        "right-shift" => "右 Shift".to_owned(),
+        "left-ctrl" => "左 Ctrl".to_owned(),
+        "right-ctrl" => "右 Ctrl".to_owned(),
+        "left-cmd" => format!("左 {CMD}"),
+        "right-cmd" => format!("右 {CMD}"),
+        "left-alt" => format!("左 {ALT}"),
+        "right-alt" => format!("右 {ALT}"),
+        "eisu" => "英数".to_owned(),
+        "kana" => "かな".to_owned(),
+        "henkan" => "変換".to_owned(),
+        "muhenkan" => "無変換".to_owned(),
+        "zenkaku-hankaku" => "半角/全角".to_owned(),
+        "caps-lock" => "Caps Lock".to_owned(),
+        key => key.to_uppercase(),
+    });
+    parts.join("+")
+}
+
+#[cfg(target_os = "macos")]
+const CMD: &str = "Cmd";
+#[cfg(not(target_os = "macos"))]
+const CMD: &str = "Win";
+#[cfg(target_os = "macos")]
+const ALT: &str = "Option";
+#[cfg(not(target_os = "macos"))]
+const ALT: &str = "Alt";

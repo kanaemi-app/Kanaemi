@@ -46,7 +46,7 @@ impl Shell {
 
     pub fn create(&mut self, id: Id) {
         let context = Context {
-            field: Field::new(&self.profile),
+            field: kanaemi_linux::new_field(&self.profile),
             password: false,
             erasing: Erasing::ByKeys,
         };

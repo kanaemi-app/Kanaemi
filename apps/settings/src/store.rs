@@ -95,9 +95,13 @@ impl Store {
 }
 
 /// Whether the IME could not use a value with this problem. A romaji table
-/// with invalid lines is still used, without those lines.
+/// with invalid lines is still used, without those lines, and a key the
+/// application pastes with is still bound to paste.
 pub fn refuses(kind: &ProblemKind) -> bool {
-    !matches!(kind, ProblemKind::RomajiInvalidLines { .. })
+    !matches!(
+        kind,
+        ProblemKind::RomajiInvalidLines { .. } | ProblemKind::PastedByApplication
+    )
 }
 
 /// Whether the item at `problem` is the setting `item` or inside it.
@@ -172,6 +176,18 @@ mod tests {
         let store = Store::open(dir.clone());
         assert_eq!(store.state.unwrap().settings, Settings::load("", &dir).0);
         assert_eq!(written(&dir), TEMPLATE);
+    }
+
+    /// It is told of, but the key works as bound wherever the application
+    /// does not paste with it.
+    #[test]
+    fn a_key_the_application_pastes_with_can_still_be_bound_to_paste() {
+        let dir = temp_dir("pasted-by-application");
+        let mut store = Store::open(dir.clone());
+        store
+            .change(&["keys", "registration", "cmd+v"], Some("@paste".into()))
+            .unwrap();
+        assert!(written(&dir).contains("\"cmd+v\" = \"@paste\""));
     }
 
     #[test]

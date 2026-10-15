@@ -43,7 +43,7 @@ struct Callbacks {
     void (*preedit)(void *ic, const char *text, size_t len, size_t cursor);
     void (*candidates)(void *ic, const Item *items, size_t count,
                        size_t selected, const char *aside, size_t aside_len);
-    void (*hide_candidates)(void *ic);
+    void (*hide_candidates)(void *ic, const char *hint, size_t hint_len);
     void (*forward)(void *ic, uint32_t keysym, uint32_t state);
     void (*delete_before)(void *ic, size_t chars);
     void (*indicator)(void *ic, const char *label, size_t len);
@@ -292,10 +292,12 @@ private:
         }
         c->inputPanel().setCandidateList(std::move(list));
         c->inputPanel().setAuxUp(fcitx::Text(std::string(aside, aside_len)));
+        c->inputPanel().setAuxDown(fcitx::Text());
         c->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
     }
 
-    static void hideCandidates(void *ic) {
+    /// The hint goes below, apart from the mode shown above for a moment.
+    static void hideCandidates(void *ic, const char *hint, size_t hint_len) {
         auto *c = context(ic);
         auto *engine = current_;
         c->inputPanel().setCandidateList(nullptr);
@@ -303,6 +305,7 @@ private:
         if (!engine || !engine->indicatorShown_) {
             c->inputPanel().setAuxUp(fcitx::Text());
         }
+        c->inputPanel().setAuxDown(fcitx::Text(std::string(hint, hint_len)));
         c->updateUserInterface(fcitx::UserInterfaceComponent::InputPanel);
     }
 

@@ -37,6 +37,8 @@ mod tests {
             mode: Mode::Kana,
             indicator: None,
             send: None,
+            paste: false,
+            registering: None,
             effects: Vec::new(),
         }
     }

@@ -16,6 +16,8 @@ mod candidate_window;
 mod candidates;
 mod handled;
 #[cfg(target_os = "macos")]
+mod hint;
+#[cfg(target_os = "macos")]
 mod indicator;
 #[cfg(target_os = "macos")]
 mod input_monitoring;

@@ -4,13 +4,12 @@
 
 use dioxus::prelude::*;
 use kanaemi_config::{
-    ApplicationTables, REGISTRATION_TABLE, RegistrationTables, UNBOUND, Value, actions,
-    bindings_table, format_action, format_binding_key, format_chord, parse_action,
+    ApplicationTables, ProblemKind, REGISTRATION_TABLE, RegistrationTables, UNBOUND, Value,
+    actions, bindings_table, format_action, format_binding_key, format_chord, parse_action,
     parse_binding_key, parse_chord, sendable_keys,
 };
-use kanaemi_core::{Action, Bindings, Chord, Config, Form, Mode, Os};
+use kanaemi_core::{Action, Bindings, Chord, Config, Form, Gesture, Mode, Os};
 
-use crate::Ctx;
 use crate::complete::KeyInput;
 use crate::controls::Filter;
 use crate::icons::{self, Icon};
@@ -18,6 +17,7 @@ use crate::intents::{self, Change, GROUPS, Intent};
 use crate::registration::{self, Pressed};
 use crate::remaps::{self, Edit, Row};
 use crate::send_except::SendExcept;
+use crate::{Ctx, messages};
 
 /// The modifiers held with a recorded key.
 #[derive(Clone, Copy, Default)]
@@ -297,6 +297,7 @@ fn action_label(mode: &str, action: Action) -> &'static str {
         (_, Action::Complete) => "補完する",
         (_, Action::CompletePrevious) => "逆向きに補完する",
         (_, Action::RereadKana) => "打ったかなを読みに戻す",
+        (_, Action::Paste) => "クリップボードの文字列を貼る",
         (_, Action::NextPage) => "次のページ",
         (_, Action::PreviousPage) => "前のページ",
         (_, Action::Pick(place)) => SELECT_LABELS
@@ -360,20 +361,39 @@ fn accessibility_missing() -> bool {
 #[component]
 pub fn Keys() -> Element {
     let ctx = use_context::<Ctx>();
-    let (config, tables, registering) = ctx
+    let (config, tables, registering, pasted) = ctx
         .store
         .read()
         .state
         .as_ref()
         .map(|loaded| {
             let settings = &loaded.settings;
+            let pasted: Vec<String> = loaded
+                .problems
+                .iter()
+                .filter(|p| p.kind == ProblemKind::PastedByApplication)
+                .map(|p| p.item.clone())
+                .collect();
             (
                 settings.config.clone(),
                 settings.application_tables.clone(),
                 settings.registration_tables.clone(),
+                pasted,
             )
         })
         .unwrap_or_default();
+    let pasted = (!pasted.is_empty()).then(|| {
+        rsx! {
+            div { class: "problems",
+                p { "{messages::describe(&ProblemKind::PastedByApplication)}" }
+                ul {
+                    for item in pasted {
+                        li { span { class: "item", "{item}" } }
+                    }
+                }
+            }
+        }
+    });
     let shipped = Config::default();
     let current = config.bindings.clone();
     let mut filter = use_signal(String::new);
@@ -409,6 +429,7 @@ pub fn Keys() -> Element {
     let switcher = rsx! {
         {monitoring}
         {accessibility}
+        {pasted}
         div { class: "view-switch", role: "tablist",
             button {
                 class: if !advanced() { "selected" },
@@ -1323,7 +1344,25 @@ fn RegistrationSection(tables: RegistrationTables, filter: String) -> Element {
                         for row in rows {
                             tr { key: "{pressed_text(row.key)}", class: "mode-row",
                                 td { class: "key-cell",
-                                    span { class: "key-badge", "{shown(&pressed_text(row.key))}" }
+                                    if row
+                                        .actions
+                                        .iter()
+                                        .any(|(_, action)| {
+                                            action
+                                                .is_some_and(|action| {
+                                                    pasted_by_application(action, &pressed_text(row.key), Os::RUNNING)
+                                                })
+                                        })
+                                    {
+                                        span {
+                                            class: "key-badge warning",
+                                            title: pasted_by_application_warning(),
+                                            span { class: "key-warning", Icon { paths: icons::ALERT_TRIANGLE } }
+                                            " {shown(&pressed_text(row.key))}"
+                                        }
+                                    } else {
+                                        span { class: "key-badge", "{shown(&pressed_text(row.key))}" }
+                                    }
                                 }
                                 for (mode , action) in row.actions.clone() {
                                     td {
@@ -1725,15 +1764,33 @@ fn IntentRow(intent: Intent, current: Bindings) -> Element {
                 div { class: "intent-keys",
                     for (k , place) in chips {
                         span {
-                            class: if place.is_some() { "key-chip partial" } else { "key-chip" },
+                            class: {
+                                let mut class = "key-chip".to_owned();
+                                if place.is_some() {
+                                    class.push_str(" partial");
+                                }
+                                if pasted_by_application(intent.action, &k, Os::RUNNING) {
+                                    class.push_str(" warning");
+                                }
+                                class
+                            },
                             key: "{k}",
                             button {
                                 class: "chip-key",
-                                title: if place.is_some() { "変える（一部の場面だけの割り当て）" } else { "変える" },
+                                title: if pasted_by_application(intent.action, &k, Os::RUNNING) {
+                                    pasted_by_application_warning()
+                                } else if place.is_some() {
+                                    "変える（一部の場面だけの割り当て）".to_owned()
+                                } else {
+                                    "変える".to_owned()
+                                },
                                 onclick: {
                                     let k = k.clone();
                                     move |_| open(Editing::Changing(k.clone()))
                                 },
+                                if pasted_by_application(intent.action, &k, Os::RUNNING) {
+                                    span { class: "key-warning", Icon { paths: icons::ALERT_TRIANGLE } }
+                                }
                                 "{shown(&k)}"
                                 if let Some(place) = place.clone() {
                                     span { class: "chip-where", "{place}" }
@@ -1828,76 +1885,22 @@ fn IntentRow(intent: Intent, current: Bindings) -> Element {
     }
 }
 
-/// A key as written in the settings file, the way keyboards label it:
-/// `ctrl+h` is shown as `Ctrl+H`.
-pub fn shown(text: &str) -> String {
-    if text.starts_with('@') {
-        return text.to_owned();
-    }
-    if let Some(key) = text.strip_suffix("#tap").filter(|k| !k.is_empty()) {
-        return format!("{} の単独押し", shown(key));
-    }
-    if let Some(key) = text.strip_suffix("#hold").filter(|k| !k.is_empty()) {
-        return format!("{} を押さえたまま", shown(key));
-    }
-    let mut parts = Vec::new();
-    let mut rest = text;
-    while let Some((modifier, key)) = rest.split_once('+')
-        && !key.is_empty()
-    {
-        parts.push(
-            match modifier {
-                "ctrl" => "Ctrl",
-                "cmd" => CMD,
-                "alt" => ALT,
-                "shift" => "Shift",
-                other => other,
-            }
-            .to_owned(),
-        );
-        rest = key;
-    }
-    parts.push(match rest {
-        "space" => "Space".to_owned(),
-        "enter" => "Enter".to_owned(),
-        "esc" => "Esc".to_owned(),
-        "backspace" => "Backspace".to_owned(),
-        "delete" => "Delete".to_owned(),
-        "left" => "←".to_owned(),
-        "right" => "→".to_owned(),
-        "up" => "↑".to_owned(),
-        "down" => "↓".to_owned(),
-        "home" => "Home".to_owned(),
-        "end" => "End".to_owned(),
-        "page-up" => "Page Up".to_owned(),
-        "page-down" => "Page Down".to_owned(),
-        "left-shift" => "左 Shift".to_owned(),
-        "right-shift" => "右 Shift".to_owned(),
-        "left-ctrl" => "左 Ctrl".to_owned(),
-        "right-ctrl" => "右 Ctrl".to_owned(),
-        "left-cmd" => format!("左 {CMD}"),
-        "right-cmd" => format!("右 {CMD}"),
-        "left-alt" => format!("左 {ALT}"),
-        "right-alt" => format!("右 {ALT}"),
-        "eisu" => "英数".to_owned(),
-        "kana" => "かな".to_owned(),
-        "henkan" => "変換".to_owned(),
-        "muhenkan" => "無変換".to_owned(),
-        "zenkaku-hankaku" => "半角/全角".to_owned(),
-        "caps-lock" => "Caps Lock".to_owned(),
-        key => key.to_uppercase(),
-    });
-    parts.join("+")
+pub use kanaemi_config::key_label as shown;
+
+/// Whether `key`, as the settings file writes it, bound to `action` on `os`
+/// is a key the application pastes with itself, so binding it to paste
+/// pastes outside the text to register.
+fn pasted_by_application(action: Action, key: &str, os: Option<Os>) -> bool {
+    action == Action::Paste
+        && parse_binding_key(key).is_some_and(|(chord, gesture)| {
+            gesture == Gesture::Press && Some(chord) == kanaemi_config::pasted_by_application(os)
+        })
 }
 
-#[cfg(target_os = "macos")]
-const CMD: &str = "Cmd";
-#[cfg(not(target_os = "macos"))]
-const CMD: &str = "Win";
-#[cfg(target_os = "macos")]
-const ALT: &str = "Option";
-#[cfg(not(target_os = "macos"))]
-const ALT: &str = "Alt";
+/// What the warning on a key bound so says.
+fn pasted_by_application_warning() -> String {
+    messages::describe(&ProblemKind::PastedByApplication)
+}
 
 #[cfg(test)]
 mod tests {
@@ -1944,6 +1947,19 @@ mod tests {
             alt,
             shift,
         }
+    }
+
+    #[test]
+    fn only_paste_on_the_key_a_macos_application_pastes_with_is_warned_of() {
+        let mac = Some(Os::MacOs);
+        assert!(pasted_by_application(Action::Paste, "cmd+v", mac));
+        assert!(!pasted_by_application(Action::Paste, "ctrl+v", mac));
+        assert!(!pasted_by_application(Action::Commit, "cmd+v", mac));
+        assert!(!pasted_by_application(
+            Action::Paste,
+            "cmd+v",
+            Some(Os::Windows)
+        ));
     }
 
     #[test]

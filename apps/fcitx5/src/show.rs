@@ -15,7 +15,9 @@ pub(crate) trait Host {
     fn preedit(&mut self, text: &str, cursor: usize);
     /// The page, the highlighted one, and the text beside them.
     fn candidates(&mut self, items: &[Candidate<'_>], selected: usize, aside: Option<&str>);
-    fn hide_candidates(&mut self);
+    /// No candidates, and the line of text that tells what is typed
+    /// instead, if anything.
+    fn hide_candidates(&mut self, hint: Option<&str>);
     fn forward(&mut self, keysym: u32, state: u32);
     /// Deletes the characters just before the caret from the text around
     /// it, as Unicode counts them.
@@ -61,7 +63,7 @@ pub(crate) fn tell(host: &mut impl Host, signals: &[Signal], erasing: Erasing) {
                 let items: Vec<_> = items.iter().map(candidate).collect();
                 host.candidates(&items, *selected, aside.as_deref());
             }
-            Signal::HideCandidates => host.hide_candidates(),
+            Signal::HideCandidates(hint) => host.hide_candidates(hint.as_deref()),
             Signal::Forward(keysym, state) => host.forward(*keysym, *state),
             Signal::Indicator(mode) => host.indicator(reply::mode_label(*mode)),
         }
@@ -101,7 +103,7 @@ mod tests {
         Commit(String),
         Preedit(String, usize),
         Candidates(Vec<(String, String)>, usize, Option<String>),
-        HideCandidates,
+        HideCandidates(Option<String>),
         Forward(u32, u32),
         DeleteBefore(usize),
         Indicator(String),
@@ -125,8 +127,8 @@ mod tests {
             self.0
                 .push(Told::Candidates(items, selected, aside.map(str::to_owned)));
         }
-        fn hide_candidates(&mut self) {
-            self.0.push(Told::HideCandidates);
+        fn hide_candidates(&mut self, hint: Option<&str>) {
+            self.0.push(Told::HideCandidates(hint.map(str::to_owned)));
         }
         fn forward(&mut self, keysym: u32, state: u32) {
             self.0.push(Told::Forward(keysym, state));
@@ -199,18 +201,26 @@ mod tests {
     }
 
     #[test]
+    fn what_the_aux_text_tells_without_candidates_goes_with_hiding_them() {
+        assert_eq!(
+            told(&[Signal::HideCandidates(Some("辞書登録中".to_owned()))]),
+            [Told::HideCandidates(Some("辞書登録中".to_owned()))]
+        );
+    }
+
+    #[test]
     fn the_signals_are_told_in_order() {
         assert_eq!(
             told(&[
                 Signal::Forward(0xff08, 0),
                 Signal::Commit("漢字".to_owned()),
-                Signal::HideCandidates,
+                Signal::HideCandidates(None),
                 Signal::Indicator(Mode::Abc),
             ]),
             [
                 Told::Forward(0xff08, 0),
                 Told::Commit("漢字".to_owned()),
-                Told::HideCandidates,
+                Told::HideCandidates(None),
                 Told::Indicator("ABC".to_owned()),
             ]
         );

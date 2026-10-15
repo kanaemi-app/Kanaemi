@@ -11,9 +11,12 @@
 #[cfg(windows)]
 mod candidates;
 #[cfg(windows)]
+mod clipboard;
+#[cfg(windows)]
 pub mod com;
 pub mod control;
 mod focus;
+mod hint;
 #[cfg(windows)]
 mod indicator;
 mod input_scope;

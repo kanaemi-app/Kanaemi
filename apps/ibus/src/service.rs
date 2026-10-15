@@ -10,7 +10,7 @@ use std::collections::HashMap;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
-use std::sync::mpsc;
+use std::sync::{Mutex, PoisonError, mpsc};
 use std::time::{Duration, Instant};
 
 use kanaemi_core::Event;
@@ -67,7 +67,7 @@ impl Shell {
 
     fn create(&mut self, id: u32) {
         let context = Context {
-            field: Field::new(&self.profile),
+            field: kanaemi_linux::new_field(&self.profile),
             password: false,
             private: false,
         };
@@ -253,6 +253,7 @@ async fn emit(
             Signal::Candidates(items, selected, aside) => {
                 // The candidates take the place by the caret.
                 INDICATOR.fetch_add(1, Ordering::Relaxed);
+                set_hint(None);
                 let shown = match aside {
                     Some(aside) => {
                         ASIDE.store(true, Ordering::Relaxed);
@@ -270,12 +271,28 @@ async fn emit(
                 let body = (ibus::lookup_table(&items, selected), true);
                 send(connection, path, "UpdateLookupTable", &body).await
             }
-            Signal::HideCandidates => {
-                // What the auxiliary text told of them goes with them; the
-                // mode shown there for a moment stays.
-                if ASIDE.swap(false, Ordering::Relaxed) {
-                    let _ = send(connection, path, "HideAuxiliaryText", &()).await;
+            Signal::HideCandidates(hint) => {
+                match &hint {
+                    // The hint takes the place by the caret, as the
+                    // candidates do.
+                    Some(hint) => {
+                        INDICATOR.fetch_add(1, Ordering::Relaxed);
+                        ASIDE.store(true, Ordering::Relaxed);
+                        let body = (ibus::text(hint), true);
+                        if let Err(error) =
+                            send(connection, path, "UpdateAuxiliaryText", &body).await
+                        {
+                            tracing::warn!(%error, "IBus not told");
+                        }
+                    }
+                    // What the auxiliary text told goes with the candidates;
+                    // the mode shown there for a moment stays.
+                    None if ASIDE.swap(false, Ordering::Relaxed) => {
+                        let _ = send(connection, path, "HideAuxiliaryText", &()).await;
+                    }
+                    None => {}
                 }
+                set_hint(hint);
                 send(connection, path, "HideLookupTable", &()).await
             }
             // Forwarded keys reach the application in order, before what
@@ -331,22 +348,39 @@ where
         .await
 }
 
-/// Whether the auxiliary text tells of the candidates shown.
+/// Whether the auxiliary text tells of the candidates shown, or the hint.
 static ASIDE: AtomicBool = AtomicBool::new(false);
+/// The hint shown while there are no candidates, which the auxiliary text
+/// tells again once the mode shown there goes.
+static HINT: Mutex<Option<String>> = Mutex::new(None);
 /// Counts the times the mode was shown, so only the latest hides it.
 static INDICATOR: AtomicU64 = AtomicU64::new(0);
 /// How long the mode shows by the caret.
 const INDICATOR_VISIBLE: Duration = Duration::from_millis(800);
 
+fn set_hint(hint: Option<String>) {
+    *HINT.lock().unwrap_or_else(PoisonError::into_inner) = hint;
+}
+
 /// Hides the mode shown by the caret once a moment has passed, unless it
-/// was shown again or the candidates took its place meanwhile.
+/// was shown again or the candidates or the hint took its place meanwhile.
+/// The hint shown before it comes back.
 fn hide_indicator_later(connection: Connection, path: OwnedObjectPath) {
     let shown = INDICATOR.fetch_add(1, Ordering::Relaxed) + 1;
     std::thread::spawn(move || {
         std::thread::sleep(INDICATOR_VISIBLE);
         if INDICATOR.load(Ordering::Relaxed) == shown {
-            let hidden = zbus::block_on(send(&connection, &path, "HideAuxiliaryText", &()));
-            if let Err(error) = hidden {
+            let hint = HINT.lock().unwrap_or_else(PoisonError::into_inner).clone();
+            let told = zbus::block_on(async {
+                match hint {
+                    Some(hint) => {
+                        let body = (ibus::text(&hint), true);
+                        send(&connection, &path, "UpdateAuxiliaryText", &body).await
+                    }
+                    None => send(&connection, &path, "HideAuxiliaryText", &()).await,
+                }
+            });
+            if let Err(error) = told {
                 tracing::warn!(%error, "IBus not told");
             }
         }

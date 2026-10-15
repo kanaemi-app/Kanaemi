@@ -177,6 +177,10 @@ main > .title {
   max-width: 100%;
 }
 .key-chip.partial { border-style: dashed; }
+/* A key that does not do what it is bound to, told on the key itself. */
+.key-chip.warning, .key-badge.warning { border-color: var(--warn-border); background: var(--warn-bg); }
+.key-warning { display: inline-flex; align-items: center; color: var(--warn-border); }
+.key-warning svg { width: 14px; height: 14px; }
 .chip-key {
   display: inline-flex;
   align-items: center;

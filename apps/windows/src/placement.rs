@@ -15,6 +15,21 @@ pub(crate) fn place(at: Rect, size: (i32, i32), gap: i32, work: Rect) -> (i32, i
     (x, y.max(work.top))
 }
 
+/// Where a popup of `size` goes by `at` to stay off the line below the
+/// text, where [`place`] puts another: just above it, or below it when there
+/// is no room above.
+pub(crate) fn place_above(at: Rect, size: (i32, i32), gap: i32, work: Rect) -> (i32, i32) {
+    let (width, height) = size;
+    let above = at.top - gap - height;
+    let y = if above >= work.top {
+        above
+    } else {
+        at.bottom + gap
+    };
+    let x = at.left.min(work.right - width).max(work.left);
+    (x, y)
+}
+
 /// A rectangle by its edges, as Windows gives one.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Rect {
@@ -57,5 +72,18 @@ mod tests {
     #[test]
     fn a_popup_without_room_below_goes_above() {
         assert_eq!(place(text(100, 1000), (300, 100), 2, SCREEN), (100, 898));
+    }
+
+    #[test]
+    fn a_popup_kept_off_the_line_below_goes_just_above_the_text() {
+        assert_eq!(
+            place_above(text(100, 200), (300, 30), 2, SCREEN),
+            (100, 168)
+        );
+    }
+
+    #[test]
+    fn a_popup_without_room_above_goes_below() {
+        assert_eq!(place_above(text(100, 10), (300, 30), 2, SCREEN), (100, 32));
     }
 }

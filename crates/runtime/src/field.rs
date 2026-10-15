@@ -1,5 +1,6 @@
 //! One input field's core, kept in step with the profile every field shares.
 
+use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 
 use kanaemi_core::{Core, Effect, Event, Output};
@@ -21,7 +22,11 @@ pub struct Field {
     application: String,
     /// Whether the host can send keys, told again to a core built anew.
     sends_keys: bool,
+    /// Reads the text on the clipboard when the core asks for it.
+    clipboard: Option<Clipboard>,
 }
+
+type Clipboard = Arc<dyn Fn() -> Option<String> + Send + Sync>;
 
 impl Field {
     pub fn new(profile: &Profile) -> Self {
@@ -34,6 +39,7 @@ impl Field {
             private: false,
             application: String::new(),
             sends_keys: true,
+            clipboard: None,
         }
     }
 
@@ -52,6 +58,13 @@ impl Field {
         self.core.set_sends_keys(sends);
     }
 
+    /// Gives how to read the text on the clipboard, `None` when it holds
+    /// none. A key that pastes reads it there and then; without a reader,
+    /// [`Output::paste`] is left for the host.
+    pub fn set_clipboard(&mut self, read: impl Fn() -> Option<String> + Send + Sync + 'static) {
+        self.clipboard = Some(Arc::new(read));
+    }
+
     /// A field built again from `profile`, still the same one to it.
     fn rebuilt(&self, profile: &Profile) -> Self {
         let mut field = Self {
@@ -59,6 +72,7 @@ impl Field {
             private: self.private,
             application: self.application.clone(),
             sends_keys: self.sends_keys,
+            clipboard: self.clipboard.clone(),
             ..Self::new(profile)
         };
         field.core.set_application(&field.application);
@@ -113,6 +127,8 @@ impl Field {
             mode: self.core.mode(),
             indicator: None,
             send: None,
+            paste: false,
+            registering: None,
             effects: Vec::new(),
         }
     }
@@ -126,6 +142,12 @@ impl Field {
             }
         }
         let mut output = self.core.handle(event);
+        if output.paste
+            && let Some(read) = &self.clipboard
+        {
+            let text = read();
+            output = self.pasted(output, text.as_deref());
+        }
         profile.log_functions();
         // A mode another program set is shown there, not by the indicator.
         let from_outside = matches!(event, Event::SetMode(_));
@@ -150,6 +172,32 @@ impl Field {
             profile.save_selections();
         }
         output
+    }
+
+    /// What the core answers to `text` pasted, told along with what the key
+    /// that pasted did.
+    fn pasted(&mut self, key: Output, text: Option<&str>) -> Output {
+        let Some(text) = text else {
+            return Output {
+                paste: false,
+                ..key
+            };
+        };
+        let mut output = self.core.paste(text);
+        let mut effects = key.effects;
+        effects.append(&mut output.effects);
+        Output {
+            consumed: key.consumed,
+            erase: key.erase,
+            commit: match (key.commit, output.commit) {
+                (Some(a), Some(b)) => Some(a + &b),
+                (a, b) => a.or(b),
+            },
+            indicator: key.indicator.or(output.indicator),
+            send: key.send,
+            effects,
+            ..output
+        }
     }
 
     /// What the core would answer to `event`, tried on a copy: neither the
@@ -605,6 +653,71 @@ mod tests {
                 .unwrap()
                 .contains("ぬぬ\tあ")
         );
+    }
+
+    fn registering(dir: &Path) -> (Profile, Field) {
+        let mut profile = Profile::open(dir);
+        let mut field = Field::new(&profile);
+        field.handle(&mut profile, FOCUS_IN);
+        field.handle(&mut profile, press(Key::Kana));
+        typ(&mut field, &mut profile, ";nunu");
+        let mut output = field.handle(&mut profile, press(Key::Space));
+        while !output.preedit.ends_with(" « ") {
+            output = field.handle(&mut profile, press(Key::Space));
+        }
+        (profile, field)
+    }
+
+    fn ctrl_y() -> Event {
+        Event::Key(KeyEvent {
+            key: Key::Char('y'),
+            mods: Modifiers {
+                ctrl: true,
+                ..Modifiers::default()
+            },
+            kind: KeyKind::Press,
+            time_ms: 0,
+        })
+    }
+
+    #[test]
+    fn the_key_that_pastes_puts_what_the_clipboard_reader_gives_into_the_text_to_register() {
+        let dir = temp_dir("paste");
+        let (mut profile, mut field) = registering(&dir);
+        field.set_clipboard(|| Some("漢字".to_owned()));
+        let output = field.handle(&mut profile, ctrl_y());
+        assert!(output.consumed);
+        assert!(!output.paste);
+        assert_eq!(output.preedit, "»ぬぬ « 漢字");
+        let output = field.handle(&mut profile, press(Key::Enter));
+        assert_eq!(output.commit.as_deref(), Some("漢字"));
+    }
+
+    #[test]
+    fn a_clipboard_with_no_text_pastes_nothing() {
+        let dir = temp_dir("paste-empty");
+        let (mut profile, mut field) = registering(&dir);
+        field.set_clipboard(|| None);
+        let output = field.handle(&mut profile, ctrl_y());
+        assert!(output.consumed);
+        assert_eq!(output.preedit, "»ぬぬ « ");
+    }
+
+    #[test]
+    fn the_clipboard_reader_is_kept_when_the_settings_change() {
+        let dir = temp_dir("paste-reloaded");
+        let (mut profile, mut field) = registering(&dir);
+        field.set_clipboard(|| Some("x".to_owned()));
+        field.handle(&mut profile, Event::FocusOut);
+        change_settings(&dir, "");
+        field.handle(&mut profile, FOCUS_IN);
+        field.handle(&mut profile, press(Key::Kana));
+        typ(&mut field, &mut profile, ";nunu");
+        let mut output = field.handle(&mut profile, press(Key::Space));
+        while !output.preedit.ends_with(" « ") {
+            output = field.handle(&mut profile, press(Key::Space));
+        }
+        assert_eq!(field.handle(&mut profile, ctrl_y()).preedit, "»ぬぬ « x");
     }
 
     /// `;pdf` committed with F9, undone, gone past its candidates, then `a`

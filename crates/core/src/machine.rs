@@ -4,7 +4,7 @@ use crate::edit::{CursorMove, Editable};
 use crate::word::Word;
 use crate::{
     Action, Candidate, CandidateView, Chord, Config, Converter, Effect, Event, Form, Gesture, Key,
-    KeyEvent, KeyKind, Mode, Modifiers, Output, PAGE_LEN, Scene, romaji,
+    KeyEvent, KeyKind, Mode, Modifiers, Output, PAGE_LEN, Registering, Scene, romaji,
 };
 
 const MAX_REGISTRATION_DEPTH: usize = 3;
@@ -220,6 +220,7 @@ pub struct Core<C> {
     commit: String,
     erase: Option<String>,
     send: Option<Chord>,
+    paste: bool,
     effects: Vec<Effect>,
 }
 
@@ -248,16 +249,14 @@ impl<C: Converter> Core<C> {
             commit: String::new(),
             erase: None,
             send: None,
+            paste: false,
             effects: Vec::new(),
         }
     }
 
     pub fn handle(&mut self, event: Event) -> Output {
         let before = self.mode;
-        self.commit.clear();
-        self.erase = None;
-        self.send = None;
-        self.effects.clear();
+        self.start();
         // Only the keys that complete, and a reading picked from its list,
         // go on with a completion. A caret that may have moved leaves it, as
         // it leaves what is being typed: a host may tell of the click on the
@@ -338,6 +337,39 @@ impl<C: Converter> Core<C> {
             self.kana_run = None;
             self.rereading = None;
         }
+        let mut output = self.finish(consumed, before);
+        if let Event::SetMode(_) = event {
+            output.indicator = None;
+        }
+        output
+    }
+
+    /// Puts `text`, read from the clipboard as [`Output::paste`] asked, into
+    /// the text to register, if that is still typed outside a reading. A word
+    /// in a dictionary stays on one line, so line breaks and other control
+    /// characters are left out.
+    pub fn paste(&mut self, text: &str) -> Output {
+        let before = self.mode;
+        self.start();
+        self.completion = None;
+        if !self.registrations.is_empty() && matches!(self.state, State::Idle { .. }) {
+            let text: String = text.chars().filter(|c| !c.is_control()).collect();
+            self.emit(&text);
+        }
+        self.finish(false, before)
+    }
+
+    /// Forgets what the last event gave the host.
+    fn start(&mut self) {
+        self.commit.clear();
+        self.erase = None;
+        self.send = None;
+        self.paste = false;
+        self.effects.clear();
+    }
+
+    /// Settles what the event left and tells it.
+    fn finish(&mut self, consumed: bool, before: Mode) -> Output {
         // A word chosen again and erased leaves what followed it.
         if !self.composing()
             && let Some(redoing) = self.redoing.take()
@@ -351,11 +383,7 @@ impl<C: Converter> Core<C> {
         if !self.commit.is_empty() {
             self.effects.push(Effect::Typed(self.commit.clone()));
         }
-        let mut output = self.output(consumed, before);
-        if let Event::SetMode(_) = event {
-            output.indicator = None;
-        }
-        output
+        self.output(consumed, before)
     }
 
     pub fn mode(&self) -> Mode {
@@ -1280,6 +1308,7 @@ impl<C: Converter> Core<C> {
             Action::Commit => self.finish_registration(),
             Action::Cancel => self.cancel_registration(),
             Action::Backspace => self.erase_registration_char(),
+            Action::Paste => self.paste = true,
             Action::Delete => {
                 if let Some(registration) = self.registrations.last_mut() {
                     registration.text.delete();
@@ -2078,8 +2107,33 @@ impl<C: Converter> Core<C> {
             mode: self.mode,
             indicator: (self.config.mode_indicator && self.mode != before).then_some(self.mode),
             send: self.send,
+            paste: self.paste,
+            registering: self.registering(),
             effects: self.effects.clone(),
         }
+    }
+
+    fn registering(&self) -> Option<Registering> {
+        if self.registrations.is_empty() {
+            return None;
+        }
+        let scene = self.scene();
+        let key = |action| {
+            matches!(scene, Scene::Registration(_))
+                .then(|| {
+                    self.config
+                        .bindings
+                        .get(scene)
+                        .iter()
+                        .find(|b| b.to == action && b.gesture == Gesture::Press)
+                        .map(|b| b.from)
+                })
+                .flatten()
+        };
+        Some(Registering {
+            cancel: key(Action::Cancel),
+            paste: key(Action::Paste),
+        })
     }
 
     fn push_word(&self, preedit: &mut String, word: &Word) {

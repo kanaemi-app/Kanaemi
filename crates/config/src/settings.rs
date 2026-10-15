@@ -8,12 +8,12 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use kanaemi_core::{
-    Action, Binding, Bindings, Chord, Config, Gesture, Mode, Modifiers, Os, Remap, RomajiTable,
+    Action, Binding, Bindings, Chord, Config, Gesture, Key, Mode, Modifiers, Os, Remap, RomajiTable,
 };
 use toml::{Table, Value};
 
 use crate::folder::stays_inside;
-use crate::keys::{MODES, Scene, is_modifier, sendable};
+use crate::keys::{MODES, Scene, format_action, is_modifier, sendable};
 use crate::{
     APPLICATION_TABLE, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FILE_NAME,
     REGISTRATION_TABLE, UNBOUND, builtin_dictionary, default_romaji_table, mode_table, os_table,
@@ -113,12 +113,17 @@ pub enum ProblemKind {
     UnknownAction(String),
     /// An action that means nothing where it is bound.
     ActionNotHere(String),
+    /// An action that cannot be bound to a key held down.
+    ActionNotHeld(String),
     /// Only named keys can be sent to the application.
     NotSendable,
     /// A file named by a path that leaves its folder: absolute, or going up
     /// with `..`.
     OutsideFolder(String),
     UnknownBuiltinDictionary(String),
+    /// A key bound to paste that the applications of the running OS paste
+    /// with themselves, outside the text to register. The binding is kept.
+    PastedByApplication,
 }
 
 impl std::fmt::Display for ProblemKind {
@@ -142,9 +147,13 @@ impl std::fmt::Display for ProblemKind {
             Self::NotAPort => write!(f, "not a whole number from 1 to 65535"),
             Self::UnknownAction(name) => write!(f, "unknown action {name}"),
             Self::ActionNotHere(name) => write!(f, "{name} does nothing here"),
+            Self::ActionNotHeld(name) => write!(f, "{name} cannot be bound to a key held"),
             Self::NotSendable => write!(f, "only named keys can be sent to the application"),
             Self::OutsideFolder(name) => write!(f, "{name} is outside its folder"),
             Self::UnknownBuiltinDictionary(name) => write!(f, "no built-in dictionary {name}"),
+            Self::PastedByApplication => {
+                write!(f, "applications paste on this key themselves")
+            }
         }
     }
 }
@@ -177,6 +186,19 @@ impl Settings {
         }
         (reader.settings, reader.problems)
     }
+}
+
+/// The key the applications of `os` paste with themselves, whatever the IME
+/// makes of it: a macOS application takes Cmd+V from its menu before the IME
+/// sees it, or even after the IME has taken it.
+pub fn pasted_by_application(os: Option<Os>) -> Option<Chord> {
+    (os == Some(Os::MacOs)).then_some(Chord {
+        key: Key::Char('v'),
+        mods: Modifiers {
+            cmd: true,
+            ..Modifiers::default()
+        },
+    })
 }
 
 struct Reader<'a> {
@@ -480,6 +502,15 @@ impl Reader<'_> {
                 }
             },
         };
+        // The host pastes once the key is handled, after what a held key
+        // types, not before it as a held key's action goes.
+        if to == Some(Action::Paste) && gesture == Gesture::Hold {
+            self.problem(at, ProblemKind::ActionNotHeld(format_action(Action::Paste)));
+            return None;
+        }
+        if to == Some(Action::Paste) && Some(from) == pasted_by_application(Os::RUNNING) {
+            self.problem(at, ProblemKind::PastedByApplication);
+        }
         Some((from, gesture, to))
     }
 

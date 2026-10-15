@@ -21,8 +21,8 @@ use objc2::{
     msg_send, sel,
 };
 use objc2_app_kit::{
-    NSApplication, NSEvent, NSEventMask, NSEventType, NSMenu, NSMenuItem,
-    NSUnderlineStyleAttributeName,
+    NSApplication, NSEvent, NSEventMask, NSEventType, NSMenu, NSMenuItem, NSPasteboard,
+    NSPasteboardTypeString, NSUnderlineStyleAttributeName,
 };
 use objc2_core_graphics::{
     CGEvent, CGEventField, CGEventFlags, CGEventSource, CGEventSourceStateID, CGEventTapLocation,
@@ -36,7 +36,7 @@ use objc2_input_method_kit::{IMKInputController, IMKServer};
 use crate::keys::{Keys, POSTED_MARK, RawEvent, RawKind, key_to_send, utf16_offset};
 use crate::posted::{self, Posted, Purpose};
 use crate::{
-    accessibility, candidate_window, handled, indicator, input_monitoring, key_tap, meaning,
+    accessibility, candidate_window, handled, hint, indicator, input_monitoring, key_tap, meaning,
     secure_input,
 };
 
@@ -256,7 +256,15 @@ fn release_keys() {
 }
 
 fn new_field() -> Field {
-    with_profile(|profile| Field::new(profile))
+    let mut field = with_profile(|profile| Field::new(profile));
+    field.set_clipboard(read_clipboard);
+    field
+}
+
+fn read_clipboard() -> Option<String> {
+    let pasteboard = NSPasteboard::generalPasteboard();
+    let text = unsafe { pasteboard.stringForType(NSPasteboardTypeString) }?;
+    Some(text.to_string())
 }
 
 pub struct Ivars {
@@ -416,6 +424,7 @@ define_class!(
                 // The candidate window is Kanaemi's own, unknown to Input
                 // Method Kit, which hides only the palettes it keeps.
                 candidate_window::hide();
+                hint::hide();
                 let _: () = unsafe { msg_send![super(self), hidePalettes] };
             });
         }
@@ -557,6 +566,7 @@ impl KanaemiController {
     fn deactivate(&self, sender: Option<&AnyObject>) {
         self.dispatch(Event::FocusOut, sender);
         candidate_window::hide();
+        hint::hide();
         // Another client may have been activated first.
         ACTIVE.with_borrow_mut(|active| {
             if active
@@ -640,6 +650,7 @@ impl KanaemiController {
                 }
                 ivars.marked.set(false);
                 candidate_window::hide();
+                hint::hide();
                 false
             }
         }
@@ -667,6 +678,14 @@ impl KanaemiController {
         match &output.candidates {
             Some(view) => candidate_window::show(view, client),
             None => candidate_window::hide(),
+        }
+        match output.registering {
+            // A candidate list may be placed above the line too, where the
+            // hint would cover it.
+            Some(registering) if output.candidates.is_none() => {
+                hint::show(&kanaemi_runtime::registration_hint(registering), client)
+            }
+            _ => hint::hide(),
         }
     }
 }

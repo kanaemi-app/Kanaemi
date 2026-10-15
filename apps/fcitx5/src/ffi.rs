@@ -31,7 +31,9 @@ pub struct Callbacks {
         aside: *const c_char,
         aside_len: usize,
     ),
-    hide_candidates: unsafe extern "C" fn(ic: *mut c_void),
+    /// What the line of text below tells instead of the candidates, empty
+    /// for nothing.
+    hide_candidates: unsafe extern "C" fn(ic: *mut c_void, hint: *const c_char, hint_len: usize),
     forward: unsafe extern "C" fn(ic: *mut c_void, keysym: u32, state: u32),
     /// Deletes the characters just before the caret, as Unicode counts
     /// them, from the text around it.
@@ -126,8 +128,9 @@ impl Host for Context<'_> {
         }
     }
 
-    fn hide_candidates(&mut self) {
-        unsafe { (self.callbacks.hide_candidates)(self.ic) }
+    fn hide_candidates(&mut self, hint: Option<&str>) {
+        let hint = hint.unwrap_or_default();
+        unsafe { (self.callbacks.hide_candidates)(self.ic, hint.as_ptr().cast(), hint.len()) }
     }
 
     fn forward(&mut self, keysym: u32, state: u32) {

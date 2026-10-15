@@ -214,6 +214,14 @@ impl T {
         out
     }
 
+    pub fn paste(&mut self, text: &str) -> Output {
+        let out = self.core.paste(text);
+        for effect in &out.effects {
+            self.learned.borrow_mut().learn(effect);
+        }
+        out
+    }
+
     pub fn press(&mut self, key: Key, mods: Modifiers) -> Output {
         self.now += 10;
         self.handle(Event::Key(KeyEvent {
