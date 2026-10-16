@@ -35,7 +35,7 @@ mod server {
 
     use kanaemi::pipe::{self, MAX_LINE};
     use kanaemi_config::{
-        DICTIONARY_DIR, FILE_NAME, FUNCTIONS_DIR, MODEL_FILE, ROMAJI_DIR, USER_CUSTOM_FILE,
+        DICTIONARY_DIR, FILE_NAME, FUNCTIONS_DIR, Files, MODEL_FILE, ROMAJI_DIR, Settings,
     };
     use kanaemi_engine::{FileSink, LineSink, TextDictionary};
     use windows::Win32::Foundation::*;
@@ -234,7 +234,7 @@ mod server {
             Ok(pipe)
         };
         let mut writer = Writer {
-            custom: dir.join(USER_CUSTOM_FILE),
+            dir: dir.to_owned(),
             unwritten: VecDeque::new(),
         };
         let mut next = instance(true)?;
@@ -298,7 +298,8 @@ mod server {
     /// Appends the lines received to the user custom dictionary. A line it
     /// could not write is written again, in its place, before the next.
     struct Writer {
-        custom: PathBuf,
+        /// The settings folder, whose settings say where the dictionary is.
+        dir: PathBuf,
         unwritten: VecDeque<String>,
     }
 
@@ -327,7 +328,7 @@ mod server {
         /// Writes the lines waiting, oldest first; returns whether none is
         /// left.
         fn flush(&mut self) -> bool {
-            let mut sink = FileSink::waiting(&self.custom, LOCK_WAIT);
+            let mut sink = FileSink::waiting(files(&self.dir).custom, LOCK_WAIT);
             while let Some(line) = self.unwritten.front() {
                 if let Err(error) = sink.append(line) {
                     tracing::warn!(%error, unwritten = self.unwritten.len(), "user custom dictionary not written");
@@ -338,6 +339,13 @@ mod server {
             }
             true
         }
+    }
+
+    /// Where the settings in `dir` put the files with typed words, read
+    /// each time, so a line follows the settings as they change.
+    fn files(dir: &Path) -> Files {
+        let text = std::fs::read_to_string(dir.join(FILE_NAME)).unwrap_or_default();
+        Settings::load(text, dir).0.files
     }
 
     /// Only one whole line the user custom dictionary reads: any

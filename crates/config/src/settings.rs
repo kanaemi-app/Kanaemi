@@ -5,17 +5,17 @@
 //! can show it and the IME can log it.
 
 use std::collections::HashMap;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 use kanaemi_core::{
     Action, Binding, Bindings, Chord, Config, Gesture, Key, Mode, Modifiers, Os, Remap, RomajiTable,
 };
 use toml::{Table, Value};
 
-use crate::folder::stays_inside;
+use crate::folder::{file_path, kept_for_else, place, stays_inside};
 use crate::keys::{MODES, Scene, format_action, is_modifier, sendable};
 use crate::{
-    APPLICATION_TABLE, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FILE_NAME,
+    APPLICATION_TABLE, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FILE_NAME, Files,
     REGISTRATION_TABLE, UNBOUND, builtin_dictionary, default_romaji_table, mode_table, os_table,
     parse_action, parse_binding_key, parse_chord, read_romaji_table,
 };
@@ -28,6 +28,7 @@ pub struct Settings {
     pub config: Config,
     /// The dictionaries as listed; `None` when no list is written.
     pub dictionaries: Option<Vec<DictionarySource>>,
+    pub files: Files,
     /// The romaji tables as written, bundled names and file names; `None`
     /// when the default stack is used.
     pub romaji_tables: Option<Vec<String>>,
@@ -122,6 +123,12 @@ pub enum ProblemKind {
     /// A file named by a path that leaves its folder: absolute, or going up
     /// with `..`.
     OutsideFolder(String),
+    /// A path that names no file: empty, or under a home folder there is
+    /// none of.
+    NotAFile,
+    /// A path where the settings folder keeps something else, or where the
+    /// other file with typed words is.
+    KeptForElse,
     UnknownBuiltinDictionary(String),
     /// A key bound to paste that the applications of the running OS paste
     /// with themselves, outside the text to register. The binding is kept.
@@ -152,6 +159,8 @@ impl std::fmt::Display for ProblemKind {
             Self::ActionNotHeld(name) => write!(f, "{name} cannot be bound to a key held"),
             Self::NotSendable => write!(f, "only named keys can be sent to the application"),
             Self::OutsideFolder(name) => write!(f, "{name} is outside its folder"),
+            Self::NotAFile => write!(f, "names no file"),
+            Self::KeptForElse => write!(f, "the settings folder keeps something else there"),
             Self::UnknownBuiltinDictionary(name) => write!(f, "no built-in dictionary {name}"),
             Self::PastedByApplication => {
                 write!(f, "applications paste on this key themselves")
@@ -171,6 +180,7 @@ impl Settings {
                     ..Config::default()
                 },
                 dictionaries: None,
+                files: Files::in_folder(dir.as_ref()),
                 romaji_tables: None,
                 control_port: None,
                 ranking_model: true,
@@ -232,6 +242,7 @@ impl Reader<'_> {
                 "control" => self.section(&name, value, Self::control),
                 "ranking" => self.section(&name, value, Self::ranking),
                 "functions" => self.section(&name, value, Self::functions),
+                "files" => self.files(value),
                 _ => self.problem(name, ProblemKind::UnknownItem),
             }
         }
@@ -317,6 +328,87 @@ impl Reader<'_> {
         }
         if let Some(names) = self.strings(item, value) {
             self.settings.disabled_functions = names;
+        }
+    }
+
+    /// The shared table, then the running OS's table over it. Every OS's
+    /// table is checked, though only the running one's paths are resolved.
+    fn files(&mut self, value: Value) {
+        let Value::Table(table) = value else {
+            return self.problem("files", ProblemKind::NotATable);
+        };
+        let mut running = Vec::new();
+        let mut selections_item = None;
+        for (key, value) in table {
+            let item = format!("files.{key}");
+            let Value::Table(entries) = value else {
+                if let Some(path) = self.file(&item, &key, &value) {
+                    self.put_file(&key, path);
+                    if key == "selections" {
+                        selections_item = Some(item);
+                    }
+                }
+                continue;
+            };
+            let Some(os) = Os::ALL.into_iter().find(|os| os_table(*os) == key) else {
+                self.problem(item, ProblemKind::UnknownItem);
+                continue;
+            };
+            for (key, value) in entries {
+                let item = format!("{item}.{key}");
+                if let Some(path) = self.file(&item, &key, &value)
+                    && Os::RUNNING == Some(os)
+                {
+                    running.push((item, key, path));
+                }
+            }
+        }
+        for (item, key, path) in running {
+            self.put_file(&key, path);
+            if key == "selections" {
+                selections_item = Some(item);
+            }
+        }
+        // Neither can be at the other's default, so only both moved meet.
+        let files = &self.settings.files;
+        if place(&files.custom) == place(&files.selections)
+            && let Some(item) = selections_item
+        {
+            self.settings.files.selections = Files::in_folder(self.dir).selections;
+            self.problem(item, ProblemKind::KeptForElse);
+        }
+    }
+
+    /// The file `value` names as `key`, or `None` after telling why not.
+    fn file(&mut self, item: &str, key: &str, value: &Value) -> Option<PathBuf> {
+        if !matches!(key, "custom" | "selections") {
+            self.problem(item, ProblemKind::UnknownItem);
+            return None;
+        }
+        let Some(written) = value.as_str() else {
+            self.problem(item, ProblemKind::NotAString);
+            return None;
+        };
+        let Some(path) = file_path(written, self.dir) else {
+            self.problem(item, ProblemKind::NotAFile);
+            return None;
+        };
+        let defaults = Files::in_folder(self.dir);
+        let own = match key {
+            "custom" => &defaults.custom,
+            _ => &defaults.selections,
+        };
+        if kept_for_else(&path, self.dir, own) {
+            self.problem(item, ProblemKind::KeptForElse);
+            return None;
+        }
+        Some(path)
+    }
+
+    fn put_file(&mut self, key: &str, path: PathBuf) {
+        match key {
+            "custom" => self.settings.files.custom = path,
+            _ => self.settings.files.selections = path,
         }
     }
 

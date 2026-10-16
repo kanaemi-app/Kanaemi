@@ -12,7 +12,7 @@ use crate::okuri::okuri_row;
 use crate::placeholder::{CLOSE, OPEN, fits, placeholders};
 use crate::text_dictionary::{ItemLine, mark_placeholders, nfc, show_placeholders};
 use crate::user_custom::{
-    FileLock, append_line, lines, private, read_if_exists, remove_lines, rewrite,
+    FileLock, append_line, lines, open_private, read_if_exists, remove_lines, rewrite,
 };
 
 /// A word of a user custom dictionary without a conjugation type or a cost,
@@ -257,8 +257,10 @@ pub fn add_user_word(path: impl AsRef<Path>, word: &UserWord) -> Result<(), Word
         if lines(&bytes).any(|(_, text)| text.is_some_and(|text| word.is(text))) {
             return Err(WordError::Exists);
         }
-        let mut file =
-            private(OpenOptions::new().read(true).append(true).create(true)).open(path)?;
+        let mut file = open_private(
+            OpenOptions::new().read(true).append(true).create(true),
+            path,
+        )?;
         append_line(&mut file, &word.line())?;
         file
     };

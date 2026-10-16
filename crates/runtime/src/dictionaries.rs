@@ -9,8 +9,8 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use kanaemi_config::{
-    BUILTIN_PREFIX, DictionarySource, MODEL_FILE, SELECTIONS_FILE, USER_CUSTOM_FILE,
-    builtin_dictionary, description, dictionary_sources,
+    BUILTIN_PREFIX, DictionarySource, MODEL_FILE, builtin_dictionary, description,
+    dictionary_sources,
 };
 use kanaemi_engine::{
     BinaryDictionary, Dictionary, DictionaryError, Engine, FileLock, FileSink, LineSink,
@@ -39,6 +39,7 @@ const HEAD_LEN: u64 = 1024;
 pub(crate) fn open_engine(
     support_dir: &Path,
     sources: Option<&[DictionarySource]>,
+    custom: &Path,
     access: Access,
 ) -> Engine {
     let slots = dictionary_sources(support_dir, sources)
@@ -53,10 +54,7 @@ pub(crate) fn open_engine(
         })
         .collect::<Vec<_>>();
     let (user, sink): (_, Box<dyn LineSink>) = match access {
-        Access::Full => (
-            read_user(support_dir),
-            Box::new(FileSink::new(support_dir.join(USER_CUSTOM_FILE))),
-        ),
+        Access::Full => (read_user(custom), Box::new(FileSink::new(custom))),
         Access::Sandboxed(sink) => (TextDictionary::parse_user_custom("").0, sink()),
     };
     let mut engine = Engine::new(slots, user, sink);
@@ -171,9 +169,8 @@ fn read_model(support_dir: &Path) -> Option<Arc<RankingModel>> {
 
 /// The record of picks; a missing one is empty. `None` when it is there but
 /// cannot be read, so that it is not written over with picks that lack it.
-pub(crate) fn read_selections(support_dir: &Path) -> Option<Selections> {
-    let path = support_dir.join(SELECTIONS_FILE);
-    match fs::read_to_string(&path) {
+pub(crate) fn read_selections(path: &Path) -> Option<Selections> {
+    match fs::read_to_string(path) {
         Ok(text) => Some(Selections::parse(text)),
         Err(error) if error.kind() == io::ErrorKind::NotFound => Some(Selections::default()),
         Err(error) => {
@@ -191,10 +188,9 @@ pub(crate) struct Busy;
 /// another holds it past a short wait: the picks then wait for the next save,
 /// not the IME for the lock. `None` when no lock can be taken at all, as a
 /// record written without one beats one never written.
-pub(crate) fn lock_selections(support_dir: &Path) -> Result<Option<FileLock>, Busy> {
+pub(crate) fn lock_selections(path: &Path) -> Result<Option<FileLock>, Busy> {
     const WAIT: Duration = Duration::from_millis(50);
-    let path = support_dir.join(SELECTIONS_FILE);
-    match FileLock::try_hold(&path, WAIT) {
+    match FileLock::try_hold(path, WAIT) {
         Ok(Some(lock)) => Ok(Some(lock)),
         Ok(None) => {
             tracing::info!(path = %path.display(), "record of picks locked elsewhere; written next time");
@@ -211,9 +207,8 @@ pub(crate) fn lock_selections(support_dir: &Path) -> Result<Option<FileLock>, Bu
 /// the thread keys are handled on, so it is not waited for to reach the
 /// disk: a crash of the whole system may lose the picks made since the
 /// system last wrote it out, which are learned again.
-pub(crate) fn save_selections(support_dir: &Path, selections: &Selections) -> bool {
-    let path = support_dir.join(SELECTIONS_FILE);
-    replace_file_unsynced(&path, selections.to_text())
+pub(crate) fn save_selections(path: &Path, selections: &Selections) -> bool {
+    replace_file_unsynced(path, selections.to_text())
         .inspect_err(
             |error| tracing::warn!(path = %path.display(), %error, "record of picks not written"),
         )
@@ -221,9 +216,8 @@ pub(crate) fn save_selections(support_dir: &Path, selections: &Selections) -> bo
 }
 
 /// An unreadable user custom dictionary reads as an empty one.
-pub(crate) fn read_user(support_dir: &Path) -> TextDictionary {
-    let path = support_dir.join(USER_CUSTOM_FILE);
-    match TextDictionary::read_user_custom(&path) {
+pub(crate) fn read_user(path: &Path) -> TextDictionary {
+    match TextDictionary::read_user_custom(path) {
         Ok((dictionary, invalid)) => {
             if !invalid.is_empty() {
                 tracing::warn!(path = %path.display(), ?invalid, "invalid dictionary lines skipped");
@@ -244,19 +238,15 @@ pub(crate) fn file_stamp(path: &Path) -> FileStamp {
     kanaemi_engine::FileStamp::of(path)
 }
 
-pub(crate) fn user_stamp(support_dir: &Path) -> FileStamp {
-    file_stamp(&support_dir.join(USER_CUSTOM_FILE))
-}
-
-pub(crate) fn selections_stamp(support_dir: &Path) -> FileStamp {
-    file_stamp(&support_dir.join(SELECTIONS_FILE))
-}
-
 /// The dictionary files in use with the stamp of each: when it changes, the
 /// dictionaries are opened again.
 pub(crate) type Stamp = Vec<(PathBuf, FileStamp)>;
 
-pub(crate) fn stamp(support_dir: &Path, sources: Option<&[DictionarySource]>) -> Stamp {
+pub(crate) fn stamp(
+    support_dir: &Path,
+    sources: Option<&[DictionarySource]>,
+    custom: &Path,
+) -> Stamp {
     let stamped = |path: PathBuf| {
         let stamp = file_stamp(&path);
         (path, stamp)
@@ -265,7 +255,7 @@ pub(crate) fn stamp(support_dir: &Path, sources: Option<&[DictionarySource]>) ->
         .into_iter()
         .flat_map(|source| match source {
             // Its place counts; its own stamp tells when it changes.
-            DictionarySource::UserCustom => vec![(support_dir.join(USER_CUSTOM_FILE), None)],
+            DictionarySource::UserCustom => vec![(custom.to_path_buf(), None)],
             DictionarySource::File(path) => vec![stamped(path)],
             // The text one counts too: it is read when the binary one is not.
             DictionarySource::Converted { binary, text } => vec![stamped(binary), stamped(text)],
@@ -282,7 +272,7 @@ pub(crate) fn stamp(support_dir: &Path, sources: Option<&[DictionarySource]>) ->
 mod tests {
     use std::time::SystemTime;
 
-    use kanaemi_config::DICTIONARY_DIR;
+    use kanaemi_config::{DICTIONARY_DIR, USER_CUSTOM_FILE};
     use kanaemi_core::{Converter, Effect};
     use kanaemi_engine::convert_text;
 
@@ -323,7 +313,10 @@ mod tests {
         fs::write(dir.join(DICTIONARY_DIR).join("10-a.tsv"), "きしゃ\t汽車\n").unwrap();
         fs::write(dir.join(DICTIONARY_DIR).join("notes.txt"), "きしゃ\t帰社\n").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["貴社", "汽車", "記者"]
         );
     }
@@ -337,12 +330,18 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["汽車", "記者"]
         );
         fs::write(dir.join(MODEL_FILE), b"broken").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["汽車", "記者"],
             "a broken model ranks by the rules"
         );
@@ -351,9 +350,9 @@ mod tests {
     #[test]
     fn the_stamp_changes_when_the_model_changes() {
         let dir = temp_dir("model-stamp");
-        let before = stamp(&dir, None);
+        let before = stamp(&dir, None, &dir.join(USER_CUSTOM_FILE));
         fs::write(dir.join(MODEL_FILE), b"").unwrap();
-        assert_ne!(stamp(&dir, None), before);
+        assert_ne!(stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)), before);
     }
 
     #[test]
@@ -363,12 +362,18 @@ mod tests {
         fs::write(dir.join(DICTIONARY_DIR).join("b.kdic"), binary).unwrap();
         fs::write(dir.join(DICTIONARY_DIR).join("a.tsv"), "きしゃ\t汽車\n").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["汽車", "記者"]
         );
         fs::write(dir.join(DICTIONARY_DIR).join("b.tsv"), "きしゃ\t帰社\n").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["汽車", "記者"],
             "b.kdic stands for b.tsv"
         );
@@ -383,7 +388,10 @@ mod tests {
         fs::write(folder.join("b.kdic.12-0.replaced"), &binary).unwrap();
         fs::write(folder.join("c.tsv.12-1.replaced"), "きしゃ\t汽車\n").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["記者"]
         );
         assert!(!folder.join("b.kdic.12-0.replaced").exists());
@@ -401,7 +409,10 @@ mod tests {
         fs::write(dir.join(DICTIONARY_DIR).join("b.kdic"), &binary[..16]).unwrap();
         fs::write(dir.join(DICTIONARY_DIR).join("b.tsv"), "きしゃ\t記者\n").unwrap();
         assert_eq!(
-            surfaces(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             ["記者"]
         );
     }
@@ -421,7 +432,15 @@ mod tests {
             DictionarySource::UserCustom,
         ];
         assert_eq!(
-            surfaces(&open_engine(&dir, Some(&sources), Access::Full), "きしゃ"),
+            surfaces(
+                &open_engine(
+                    &dir,
+                    Some(&sources),
+                    &dir.join(USER_CUSTOM_FILE),
+                    Access::Full
+                ),
+                "きしゃ"
+            ),
             ["汽車", "貴社"]
         );
     }
@@ -430,7 +449,7 @@ mod tests {
     fn nothing_on_disk_still_gives_an_engine_that_registers() {
         let dir = temp_dir("empty");
         fs::remove_dir_all(dir.join(DICTIONARY_DIR)).unwrap();
-        let mut engine = open_engine(&dir, None, Access::Full);
+        let mut engine = open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full);
         assert_eq!(surfaces(&engine, "きしゃ"), Vec::<String>::new());
         engine.learn(&registered("きしゃ", "記者"));
         assert!(engine.take_write_errors().is_empty());
@@ -443,17 +462,25 @@ mod tests {
     #[test]
     fn the_stamp_changes_when_a_dictionary_file_is_added_or_rewritten() {
         let dir = temp_dir("stamp");
-        let first = stamp(&dir, None);
+        let first = stamp(&dir, None, &dir.join(USER_CUSTOM_FILE));
         fs::write(dir.join(DICTIONARY_DIR).join("a.tsv"), "きしゃ\t汽車\n").unwrap();
-        let added = stamp(&dir, None);
+        let added = stamp(&dir, None, &dir.join(USER_CUSTOM_FILE));
         assert_ne!(first, added);
-        assert_eq!(stamp(&dir, None), added, "nothing changed");
+        assert_eq!(
+            stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)),
+            added,
+            "nothing changed"
+        );
         let file = fs::File::options()
             .write(true)
             .open(dir.join(DICTIONARY_DIR).join("a.tsv"))
             .unwrap();
         file.set_modified(SystemTime::UNIX_EPOCH).unwrap();
-        assert_ne!(stamp(&dir, None), added, "rewritten");
+        assert_ne!(
+            stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)),
+            added,
+            "rewritten"
+        );
     }
 
     /// A clock coarser than two writes leaves a file replaced with as many
@@ -468,15 +495,18 @@ mod tests {
         let user = dir.join(USER_CUSTOM_FILE);
         replace_file(&dictionary, "きしゃ\t汽車\n").unwrap();
         replace_file(&user, "きしゃ\t汽車\n").unwrap();
-        let (before, user_before) = (stamp(&dir, None), user_stamp(&dir));
+        let (before, user_before) = (
+            stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)),
+            file_stamp(&dir.join(USER_CUSTOM_FILE)),
+        );
         for path in [&dictionary, &user] {
             let modified = fs::metadata(path).unwrap().modified().unwrap();
             replace_file(path, "きしゃ\t記者\n").unwrap();
             let file = fs::File::options().write(true).open(path).unwrap();
             file.set_modified(modified).unwrap();
         }
-        assert_ne!(stamp(&dir, None), before);
-        assert_ne!(user_stamp(&dir), user_before);
+        assert_ne!(stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)), before);
+        assert_ne!(file_stamp(&dir.join(USER_CUSTOM_FILE)), user_before);
     }
 
     #[test]
@@ -485,34 +515,38 @@ mod tests {
         let (binary, _) = convert_text("きしゃ\t記者\n");
         fs::write(dir.join(DICTIONARY_DIR).join("b.kdic"), binary).unwrap();
         fs::write(dir.join(DICTIONARY_DIR).join("b.tsv"), "きしゃ\t記者\n").unwrap();
-        let before = stamp(&dir, None);
+        let before = stamp(&dir, None, &dir.join(USER_CUSTOM_FILE));
         fs::File::options()
             .write(true)
             .open(dir.join(DICTIONARY_DIR).join("b.tsv"))
             .unwrap()
             .set_modified(SystemTime::UNIX_EPOCH)
             .unwrap();
-        assert_ne!(stamp(&dir, None), before);
+        assert_ne!(stamp(&dir, None, &dir.join(USER_CUSTOM_FILE)), before);
     }
 
     #[test]
     fn the_user_stamp_changes_on_every_append() {
         let dir = temp_dir("user-stamp");
-        assert_eq!(user_stamp(&dir), None);
-        let mut engine = open_engine(&dir, None, Access::Full);
+        assert_eq!(file_stamp(&dir.join(USER_CUSTOM_FILE)), None);
+        let mut engine = open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full);
         engine.learn(&registered("きしゃ", "記者"));
-        let first = user_stamp(&dir);
+        let first = file_stamp(&dir.join(USER_CUSTOM_FILE));
         assert!(first.is_some());
         engine.learn(&registered("きしゃ", "汽車"));
-        assert_ne!(user_stamp(&dir), first, "even within the same instant");
+        assert_ne!(
+            file_stamp(&dir.join(USER_CUSTOM_FILE)),
+            first,
+            "even within the same instant"
+        );
     }
 
     #[test]
     fn a_hand_edit_reads_back_into_the_engine() {
         let dir = temp_dir("user-edit");
-        let mut engine = open_engine(&dir, None, Access::Full);
+        let mut engine = open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full);
         fs::write(dir.join(USER_CUSTOM_FILE), "きしゃ\t記者\n").unwrap();
-        engine.replace_user(read_user(&dir));
+        engine.replace_user(read_user(&dir.join(USER_CUSTOM_FILE)));
         assert_eq!(surfaces(&engine, "きしゃ"), ["記者"]);
     }
 
@@ -522,7 +556,10 @@ mod tests {
         let a = DictionarySource::File(dir.join(DICTIONARY_DIR).join("a.tsv"));
         let first = [DictionarySource::UserCustom, a.clone()];
         let last = [a, DictionarySource::UserCustom];
-        assert_ne!(stamp(&dir, Some(&first)), stamp(&dir, Some(&last)));
+        assert_ne!(
+            stamp(&dir, Some(&first), &dir.join(USER_CUSTOM_FILE)),
+            stamp(&dir, Some(&last), &dir.join(USER_CUSTOM_FILE))
+        );
     }
 
     #[test]
@@ -531,13 +568,16 @@ mod tests {
         let sources = [DictionarySource::File(
             dir.join(DICTIONARY_DIR).join("a.tsv"),
         )];
-        let missing = stamp(&dir, Some(&sources));
+        let missing = stamp(&dir, Some(&sources), &dir.join(USER_CUSTOM_FILE));
         fs::write(dir.join(DICTIONARY_DIR).join("a.tsv"), "").unwrap();
-        assert_ne!(stamp(&dir, Some(&sources)), missing);
-        let unlisted = stamp(&dir, Some(&sources));
+        assert_ne!(
+            stamp(&dir, Some(&sources), &dir.join(USER_CUSTOM_FILE)),
+            missing
+        );
+        let unlisted = stamp(&dir, Some(&sources), &dir.join(USER_CUSTOM_FILE));
         fs::write(dir.join(DICTIONARY_DIR).join("b.tsv"), "").unwrap();
         assert_eq!(
-            stamp(&dir, Some(&sources)),
+            stamp(&dir, Some(&sources), &dir.join(USER_CUSTOM_FILE)),
             unlisted,
             "an unlisted file does not count"
         );
@@ -561,7 +601,10 @@ mod tests {
         let (binary, _) = convert_text("きしゃ\t帰社\n");
         fs::write(folder.join("c.kdic"), &binary).unwrap();
         assert_eq!(
-            sources(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            sources(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             [
                 Some(USER_CUSTOM_NAME.to_owned()),
                 Some("新聞の語".to_owned()),
@@ -579,7 +622,10 @@ mod tests {
         fs::write(folder.join("a.tsv"), text).unwrap();
         fs::write(folder.join("a.kdic"), convert_text(text).0).unwrap();
         assert_eq!(
-            sources(&open_engine(&dir, None, Access::Full), "きしゃ"),
+            sources(
+                &open_engine(&dir, None, &dir.join(USER_CUSTOM_FILE), Access::Full),
+                "きしゃ"
+            ),
             [Some("汽車の辞書".to_owned())]
         );
     }
@@ -594,7 +640,15 @@ mod tests {
         fs::write(folder.join("base.kdic"), convert_text(text).0).unwrap();
         let listed = [DictionarySource::File(folder.join("base.kdic"))];
         assert_eq!(
-            sources(&open_engine(&dir, Some(&listed), Access::Full), "きしゃ"),
+            sources(
+                &open_engine(
+                    &dir,
+                    Some(&listed),
+                    &dir.join(USER_CUSTOM_FILE),
+                    Access::Full
+                ),
+                "きしゃ"
+            ),
             [Some("公式の辞書".to_owned())]
         );
     }
@@ -604,7 +658,12 @@ mod tests {
         let dir = temp_dir("builtin-names");
         let date = builtin_dictionary("date").unwrap();
         let sources_listed = [DictionarySource::Builtin("date".to_owned())];
-        let mut engine = open_engine(&dir, Some(&sources_listed), Access::Full);
+        let mut engine = open_engine(
+            &dir,
+            Some(&sources_listed),
+            &dir.join(USER_CUSTOM_FILE),
+            Access::Full,
+        );
         engine.set_functions(Some(crate::functions::open(&dir, &[])));
         assert_eq!(
             sources(&engine, "きょう")[0],

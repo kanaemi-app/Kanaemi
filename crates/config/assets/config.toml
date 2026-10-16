@@ -55,6 +55,22 @@
 #[ranking]
 #model = true
 
+# 打った語を含むファイルの場所。custom はユーザーカスタム辞書、selections はよく選ぶ候補の記録。
+# 絶対パスか、このファイルのあるフォルダからの相対パスで書く。先頭の ~ はホームフォルダ。
+# 同期フォルダに置くと、ほかの端末と同じ辞書を使える。場所を変えても、前の場所のファイルは動かさない。
+# 書いたフォルダがなければ作らない。そのあいだは空として扱い、書けるようになったら書く。
+#[files]
+#custom = "custom.tsv"
+#selections = "selections.tsv"
+
+# OS を限った場所。書き方は上と同じで、動いている OS の表だけを上の表のあとに当てる。
+# 書いていないファイルは上の場所のまま。ほかの OS の表も、書き間違いは知らせる。
+# たとえば macOS で iCloud Drive に置くなら、[files.macos] に
+# custom = "~/Library/Mobile Documents/com~apple~CloudDocs/kanaemi/custom.tsv" と書く。
+#[files.macos]
+#[files.windows]
+#[files.linux]
+
 # 使わない関数。functions フォルダの関数はファイル名（拡張子を除く）で、組み込みの関数は "builtin:名前" で書く。
 # functions フォルダの関数を外すと、同じ名前の組み込みの関数があればそれを使う。
 #[functions]

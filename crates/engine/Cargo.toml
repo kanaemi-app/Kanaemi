@@ -17,6 +17,14 @@ thiserror = "2.0.21"
 unicode-normalization = "0.1"
 xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.61.2", features = [
+    "Win32_Foundation",
+    "Win32_Security",
+    "Win32_Security_Authorization",
+    "Win32_Storage_FileSystem",
+] }
+
 [dev-dependencies]
 criterion.workspace = true
 kanaemi-bench-support.workspace = true

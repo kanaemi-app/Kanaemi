@@ -6,10 +6,11 @@ use proptest::collection::{btree_map, vec};
 use proptest::prelude::*;
 
 use kanaemi_config::{
-    APPLICATION_TABLE, ApplicationTables, DictionarySource, FILE_NAME, ProblemKind,
-    RegistrationTables, Settings, TEMPLATE, UNBOUND, actions, binding_tables, bindings_table,
-    default_romaji_table, format_action, key_names, mode_table, os_table, parse_action,
-    parse_binding_key, parse_chord, read_or_create, read_romaji_table, sendable_keys,
+    APPLICATION_TABLE, ApplicationTables, DictionarySource, FILE_NAME, Files, ProblemKind,
+    RegistrationTables, SELECTIONS_FILE, Settings, TEMPLATE, UNBOUND, USER_CUSTOM_FILE, actions,
+    binding_tables, bindings_table, default_romaji_table, format_action, key_names, mode_table,
+    os_table, parse_action, parse_binding_key, parse_chord, read_or_create, read_romaji_table,
+    sendable_keys,
 };
 use kanaemi_core::{
     Action, Binding, Chord, Config, Gesture, Key, Mode, Modifiers, Os, Remap, RomajiTable,
@@ -201,6 +202,155 @@ fn a_control_port_is_a_port_number() {
         assert_eq!(problems, ["control.port"], "{value}");
         assert_eq!(settings.control_port, None, "{value}");
     }
+}
+
+fn home() -> PathBuf {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    PathBuf::from(std::env::var_os(variable).expect("the home folder is known"))
+}
+
+#[test]
+fn the_files_with_typed_words_are_in_the_settings_folder_unless_written() {
+    let dir = Path::new("base");
+    let (settings, problems) = load_in("", dir);
+    assert_eq!(problems, Vec::<String>::new());
+    assert_eq!(settings.files, Files::in_folder(dir));
+    assert_eq!(settings.files.custom, dir.join(USER_CUSTOM_FILE));
+    assert_eq!(settings.files.selections, dir.join(SELECTIONS_FILE));
+}
+
+#[test]
+fn a_file_with_typed_words_is_named_by_an_absolute_path_or_one_from_the_settings_folder() {
+    let dir = Path::new("base");
+    let sync = std::env::temp_dir().join("sync").join("custom.tsv");
+    let text = format!("[files]\ncustom = {sync:?}\nselections = \"private/selections.tsv\"");
+    let (settings, problems) = load_in(&text, dir);
+    assert_eq!(problems, Vec::<String>::new());
+    assert_eq!(settings.files.custom, sync);
+    assert_eq!(
+        settings.files.selections,
+        dir.join("private/selections.tsv")
+    );
+}
+
+#[test]
+fn a_leading_tilde_names_the_home_folder() {
+    let dir = Path::new("base");
+    let text = "[files]\ncustom = \"~/sync/custom.tsv\"\nselections = \"~other/selections.tsv\"";
+    let (settings, problems) = load_in(text, dir);
+    assert_eq!(problems, Vec::<String>::new());
+    assert_eq!(settings.files.custom, home().join("sync/custom.tsv"));
+    assert_eq!(settings.files.selections, dir.join("~other/selections.tsv"));
+}
+
+#[test]
+fn a_file_with_typed_words_that_cannot_be_read_stays_in_the_settings_folder() {
+    let dir = Path::new("base");
+    let text = "[files]\ncustom = 1\nselections = \"\"\nunknown = \"a.tsv\"";
+    let (settings, problems) = load_in(text, dir);
+    assert_eq!(
+        problems,
+        ["files.custom", "files.selections", "files.unknown"]
+    );
+    assert_eq!(settings.files, Files::in_folder(dir));
+    let (settings, problems) = load_in("files = \"/sync\"", dir);
+    assert_eq!(problems, ["files"]);
+    assert_eq!(settings.files, Files::in_folder(dir));
+}
+
+#[test]
+fn the_table_of_the_running_os_puts_a_file_with_typed_words_over_the_shared_one() {
+    let dir = Path::new("base");
+    let text = "[files.macos]\ncustom = \"macos.tsv\"\n\
+        [files.windows]\ncustom = \"windows.tsv\"\n\
+        [files.linux]\ncustom = \"linux.tsv\"\n\
+        [files]\ncustom = \"shared.tsv\"\nselections = \"picks.tsv\"\n";
+    let (settings, problems) = load_in(text, dir);
+    assert_eq!(problems, Vec::<String>::new());
+    let custom = match Os::RUNNING {
+        Some(Os::MacOs) => "macos.tsv",
+        Some(Os::Windows) => "windows.tsv",
+        Some(Os::Linux) => "linux.tsv",
+        None => "shared.tsv",
+    };
+    assert_eq!(settings.files.custom, dir.join(custom));
+    assert_eq!(settings.files.selections, dir.join("picks.tsv"));
+}
+
+#[test]
+fn every_os_table_of_the_files_with_typed_words_is_checked() {
+    let dir = Path::new("base");
+    let text = "[files.windows]\ncustom = 1\nunknown = \"a.tsv\"\n\
+        [files.macos]\nselections = \"\"\n\
+        [files.bsd]\ncustom = \"a.tsv\"\n";
+    let (settings, problems) = load_in(text, dir);
+    assert_eq!(
+        problems,
+        [
+            "files.windows.custom",
+            "files.windows.unknown",
+            "files.macos.selections",
+            "files.bsd"
+        ]
+    );
+    assert_eq!(settings.files, Files::in_folder(dir));
+}
+
+#[test]
+fn a_file_with_typed_words_cannot_be_put_where_the_settings_folder_keeps_something_else() {
+    let dir = Path::new("base");
+    for (key, written) in [
+        ("custom", "selections.tsv"),
+        ("selections", "custom.tsv"),
+        ("selections", "./custom.tsv"),
+        ("custom", "config.toml"),
+        ("custom", "ranking.model"),
+        ("custom", "dictionaries/custom.tsv"),
+        ("custom", "sub/../dictionaries/custom.tsv"),
+        ("selections", "romaji/picks.tsv"),
+        ("selections", "functions/picks.tsv"),
+        ("selections", "custom.tsv.lock"),
+        ("custom", "sync/words.lock"),
+    ] {
+        let (settings, problems) = load_in(&format!("[files]\n{key} = {written:?}"), dir);
+        assert_eq!(problems, [format!("files.{key}")], "{key} = {written}");
+        assert_eq!(settings.files, Files::in_folder(dir), "{key} = {written}");
+    }
+}
+
+#[cfg(any(windows, target_os = "macos"))]
+#[test]
+fn a_place_kept_for_something_else_is_found_whatever_its_case_where_files_are_found_so() {
+    let dir = Path::new("base");
+    for (key, written) in [
+        ("selections", "CUSTOM.TSV"),
+        ("custom", "Config.toml"),
+        ("custom", "Dictionaries/private.tsv"),
+    ] {
+        let (_, problems) = load_in(&format!("[files]\n{key} = {written:?}"), dir);
+        assert_eq!(problems, [format!("files.{key}")], "{key} = {written}");
+    }
+    let text = "[files]\ncustom = \"words.tsv\"\nselections = \"WORDS.tsv\"";
+    assert_eq!(load_in(text, dir).1, ["files.selections"]);
+}
+
+#[test]
+fn the_files_with_typed_words_cannot_be_one_file() {
+    let dir = Path::new("base");
+    let text = "[files]\ncustom = \"words.tsv\"\nselections = \"words.tsv\"";
+    let (settings, problems) = load_in(text, dir);
+    assert_eq!(problems, ["files.selections"]);
+    assert_eq!(settings.files.custom, dir.join("words.tsv"));
+    assert_eq!(settings.files.selections, dir.join(SELECTIONS_FILE));
+}
+
+#[test]
+fn the_template_names_the_files_with_typed_words_where_they_are_by_default() {
+    let dir = Path::new("base");
+    assert_eq!(
+        load_in(&uncommented_template(), dir).0.files,
+        Files::in_folder(dir)
+    );
 }
 
 #[test]

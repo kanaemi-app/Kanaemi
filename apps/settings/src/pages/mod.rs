@@ -17,9 +17,9 @@ use std::time::SystemTime;
 use dioxus::prelude::*;
 use kanaemi_config::{
     BUILTIN_DICTIONARIES, BUILTIN_PREFIX, DICTIONARY_DIR, DictionarySource, FUNCTIONS_DIR,
-    ROMAJI_DIR, SELECTIONS_FILE, TEXT_EXTENSION, USER_CUSTOM, USER_CUSTOM_FILE, binary_name,
-    builtin_dictionary, bundled_romaji_tables, default_romaji_tables, description,
-    dictionary_files, dictionary_sources, read_romaji_table,
+    ROMAJI_DIR, TEXT_EXTENSION, USER_CUSTOM, binary_name, builtin_dictionary,
+    bundled_romaji_tables, default_romaji_tables, description, dictionary_files,
+    dictionary_sources, read_romaji_table,
 };
 use kanaemi_core::{Config, RomajiTable};
 use kanaemi_engine::{
@@ -28,7 +28,7 @@ use kanaemi_engine::{
 };
 use unicode_normalization::UnicodeNormalization;
 
-use crate::checks::invalid_lines;
+use crate::checks::{invalid_lines, unreachable};
 use crate::controls::{
     Choice, Filter, Group, KeyToggle, ListItem, OrderedList, ResetLine, Row, Select, SwitchList,
 };

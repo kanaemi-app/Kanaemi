@@ -7,7 +7,7 @@ use std::cell::RefCell;
 use std::path::PathBuf;
 use std::rc::Rc;
 
-use kanaemi_config::DictionarySource;
+use kanaemi_config::{DictionarySource, Files};
 use kanaemi_core::{Candidate, Config, Converter, Effect, Event, Mode};
 use kanaemi_engine::{Engine, Functions, LineSink, Selections};
 use kanaemi_functions::LuauFunctions;
@@ -45,6 +45,8 @@ pub struct Profile {
     config: Config,
     /// As the settings list them; `None` reads the defaults.
     dictionaries: Option<Vec<DictionarySource>>,
+    /// Where the settings put the files with what the user typed.
+    files: Files,
     /// Counts reloads of the settings, so a field knows when to rebuild its core.
     generation: u64,
     engine: SharedEngine,
@@ -91,17 +93,25 @@ impl Profile {
         }
         // Stamped before reading, so a change while reading is seen next time.
         let (settings, settings_stamp) = settings::read_stamped(&dir, access);
-        let dictionary_stamp = dictionaries::stamp(&dir, settings.dictionaries.as_deref());
-        let user_stamp = dictionaries::user_stamp(&dir);
+        let files = settings.files;
+        let dictionary_stamp =
+            dictionaries::stamp(&dir, settings.dictionaries.as_deref(), &files.custom);
+        let user_stamp = dictionaries::file_stamp(&files.custom);
         let functions_stamp = functions::stamp(&dir);
         let functions = functions::open(&dir, &settings.disabled_functions);
-        let mut engine = dictionaries::open_engine(&dir, settings.dictionaries.as_deref(), access);
+        let mut engine = dictionaries::open_engine(
+            &dir,
+            settings.dictionaries.as_deref(),
+            &files.custom,
+            access,
+        );
         engine.set_functions(Some(functions.clone() as Rc<dyn Functions>));
         engine.set_model_enabled(settings.ranking_model);
         let mut profile = Self {
             access,
             config: settings.config,
             dictionaries: settings.dictionaries,
+            files,
             generation: 0,
             engine: SharedEngine(Rc::new(RefCell::new(engine))),
             functions,
@@ -157,6 +167,17 @@ impl Profile {
             self.settings_stamp = stamp;
             self.config = settings.config;
             self.dictionaries = settings.dictionaries;
+            if settings.files.selections != self.files.selections {
+                // The picks belong to the record they were made on, which
+                // stays where it was.
+                self.engine
+                    .0
+                    .borrow_mut()
+                    .replace_selections(Selections::default());
+                self.selections_read = false;
+                self.unsaved = None;
+            }
+            self.files = settings.files;
             self.control_port = settings.control_port;
             if let Some(control) = &mut self.control {
                 control.listen_on(self.control_port);
@@ -170,13 +191,18 @@ impl Profile {
             self.open_functions();
             tracing::info!("functions read again");
         }
-        let stamp = dictionaries::stamp(&self.dir, self.dictionaries.as_deref());
-        let user_stamp = dictionaries::user_stamp(&self.dir);
+        let stamp =
+            dictionaries::stamp(&self.dir, self.dictionaries.as_deref(), &self.files.custom);
+        let user_stamp = dictionaries::file_stamp(&self.files.custom);
         let user_changed = std::mem::replace(&mut self.user_stamp, user_stamp) != user_stamp;
         if stamp != self.dictionary_stamp {
             self.dictionary_stamp = stamp;
-            let mut engine =
-                dictionaries::open_engine(&self.dir, self.dictionaries.as_deref(), self.access);
+            let mut engine = dictionaries::open_engine(
+                &self.dir,
+                self.dictionaries.as_deref(),
+                &self.files.custom,
+                self.access,
+            );
             engine.set_functions(Some(self.functions.clone() as Rc<dyn Functions>));
             let mut shared = self.engine.0.borrow_mut();
             let previous = std::mem::replace(&mut *shared, engine);
@@ -189,13 +215,13 @@ impl Profile {
             }
             tracing::info!("dictionaries opened again");
         } else if user_changed && self.access.is_full() {
-            let user = dictionaries::read_user(&self.dir);
+            let user = dictionaries::read_user(&self.files.custom);
             self.engine.0.borrow_mut().replace_user(user);
             tracing::info!("user custom dictionary read again");
         }
         if self.access.is_full()
             && (!self.selections_read
-                || dictionaries::selections_stamp(&self.dir) != self.selections_stamp)
+                || dictionaries::file_stamp(&self.files.selections) != self.selections_stamp)
         {
             let shared = self.engine.0.clone();
             self.read_selections(&mut shared.borrow_mut());
@@ -242,12 +268,12 @@ impl Profile {
         if !self.access.is_full() {
             return;
         }
-        let Ok(_lock) = dictionaries::lock_selections(&self.dir) else {
+        let Ok(_lock) = dictionaries::lock_selections(&self.files.selections) else {
             return;
         };
         let shared = self.engine.0.clone();
         let mut engine = shared.borrow_mut();
-        if dictionaries::selections_stamp(&self.dir) != self.selections_stamp {
+        if dictionaries::file_stamp(&self.files.selections) != self.selections_stamp {
             self.read_selections(&mut engine);
         }
         if self.selections_read
@@ -258,8 +284,8 @@ impl Profile {
                 engine.take_selections().or(failed)
             }
         {
-            if dictionaries::save_selections(&self.dir, &selections) {
-                self.selections_stamp = dictionaries::selections_stamp(&self.dir);
+            if dictionaries::save_selections(&self.files.selections, &selections) {
+                self.selections_stamp = dictionaries::file_stamp(&self.files.selections);
                 engine.selections_written(&selections);
             } else {
                 self.unsaved = Some(selections);
@@ -274,8 +300,8 @@ impl Profile {
             return;
         }
         // Stamped before reading, so a change while reading is seen next time.
-        self.selections_stamp = dictionaries::selections_stamp(&self.dir);
-        let read = dictionaries::read_selections(&self.dir);
+        self.selections_stamp = dictionaries::file_stamp(&self.files.selections);
+        let read = dictionaries::read_selections(&self.files.selections);
         self.selections_read = read.is_some();
         if let Some(selections) = read {
             if self.selections_stamp.is_none() {
@@ -916,6 +942,119 @@ mod tests {
         )
         .unwrap();
         dir
+    }
+
+    /// Writes settings that put the files with typed words at `custom` and
+    /// `selections`, dated so that they read as changed.
+    fn put_files(dir: &Path, custom: &Path, selections: &Path) {
+        let path = dir.join(FILE_NAME);
+        fs::write(
+            &path,
+            format!("[files]\ncustom = {custom:?}\nselections = {selections:?}\n"),
+        )
+        .unwrap();
+        age(&path);
+    }
+
+    #[test]
+    fn a_user_custom_dictionary_elsewhere_is_read_and_written_there() {
+        let dir = temp_dir("custom-elsewhere");
+        let sync = temp_dir("custom-elsewhere-sync");
+        let custom = sync.join("words.tsv");
+        fs::write(&custom, "きしゃ\t記者\n").unwrap();
+        put_files(&dir, &custom, &dir.join(SELECTIONS_FILE));
+        let mut profile = Profile::open(&dir);
+        assert_eq!(surfaces(&profile, "きしゃ"), ["記者"]);
+        register(&mut profile, "きしゃ", "汽車");
+        assert_eq!(
+            fs::read_to_string(&custom).unwrap(),
+            "きしゃ\t記者\nきしゃ\t汽車\n"
+        );
+        assert!(!dir.join(USER_CUSTOM_FILE).exists());
+    }
+
+    #[test]
+    fn a_record_of_picks_elsewhere_is_written_there() {
+        let dir = picks_dir("picks-elsewhere");
+        let private = temp_dir("picks-elsewhere-private").join("picks.tsv");
+        put_files(&dir, &dir.join(USER_CUSTOM_FILE), &private);
+        pick(&mut Profile::open(&dir), "貴社", 3);
+        assert!(private.exists());
+        assert!(!dir.join(SELECTIONS_FILE).exists());
+        assert_eq!(surfaces(&Profile::open(&dir), "きしゃ"), ["貴社", "記者"]);
+    }
+
+    #[test]
+    fn the_user_custom_dictionary_is_read_from_where_the_settings_move_it() {
+        let dir = temp_dir("custom-moved");
+        fs::write(dir.join(USER_CUSTOM_FILE), "きしゃ\t記者\n").unwrap();
+        let mut profile = Profile::open(&dir);
+        let custom = temp_dir("custom-moved-sync").join("custom.tsv");
+        fs::write(&custom, "きしゃ\t汽車\n").unwrap();
+        put_files(&dir, &custom, &dir.join(SELECTIONS_FILE));
+        profile.reload_if_changed();
+        assert_eq!(surfaces(&profile, "きしゃ"), ["汽車"]);
+        assert_eq!(
+            fs::read_to_string(dir.join(USER_CUSTOM_FILE)).unwrap(),
+            "きしゃ\t記者\n",
+            "the file left behind is not moved"
+        );
+    }
+
+    #[test]
+    fn picks_stay_with_the_record_the_settings_move_away_from() {
+        let dir = picks_dir("picks-moved");
+        let mut profile = Profile::open(&dir);
+        pick(&mut profile, "貴社", 3);
+        let private = temp_dir("picks-moved-private").join("picks.tsv");
+        put_files(&dir, &dir.join(USER_CUSTOM_FILE), &private);
+        profile.reload_if_changed();
+        assert_eq!(surfaces(&profile, "きしゃ"), ["記者", "貴社"]);
+        pick(&mut profile, "記者", 1);
+        assert_eq!(surfaces(&Profile::open(&dir), "きしゃ"), ["記者", "貴社"]);
+        put_files(
+            &dir,
+            &dir.join(USER_CUSTOM_FILE),
+            &dir.join(SELECTIONS_FILE),
+        );
+        profile.reload_if_changed();
+        assert_eq!(surfaces(&profile, "きしゃ"), ["貴社", "記者"]);
+    }
+
+    #[test]
+    fn a_word_registered_while_its_folder_is_missing_is_written_once_it_is_there() {
+        let dir = temp_dir("custom-folder-missing");
+        let sync = temp_dir("custom-folder-missing-sync").join("missing");
+        put_files(&dir, &sync.join("custom.tsv"), &dir.join(SELECTIONS_FILE));
+        let mut profile = Profile::open(&dir);
+        register(&mut profile, "きしゃ", "汽車");
+        assert_eq!(surfaces(&profile, "きしゃ"), ["汽車"]);
+        profile.learn(&[Effect::FocusMoved]);
+        assert!(!sync.exists(), "the folder is not created");
+        fs::create_dir(&sync).unwrap();
+        profile.learn(&[Effect::FocusMoved]);
+        assert_eq!(
+            fs::read_to_string(sync.join("custom.tsv")).unwrap(),
+            "きしゃ\t汽車\n"
+        );
+    }
+
+    #[test]
+    fn picks_made_while_their_folder_is_missing_are_written_once_it_is_there() {
+        let dir = picks_dir("picks-folder-missing");
+        let private = temp_dir("picks-folder-missing-private").join("missing");
+        put_files(
+            &dir,
+            &dir.join(USER_CUSTOM_FILE),
+            &private.join("picks.tsv"),
+        );
+        let mut profile = Profile::open(&dir);
+        pick(&mut profile, "貴社", 3);
+        assert_eq!(surfaces(&profile, "きしゃ"), ["貴社", "記者"]);
+        assert!(!private.exists(), "the folder is not created");
+        fs::create_dir(&private).unwrap();
+        pick(&mut profile, "貴社", 1);
+        assert_eq!(surfaces(&Profile::open(&dir), "きしゃ"), ["貴社", "記者"]);
     }
 
     #[test]
