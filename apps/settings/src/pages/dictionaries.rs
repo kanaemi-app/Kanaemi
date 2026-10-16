@@ -6,6 +6,7 @@ pub fn Dictionaries() -> Element {
     let ctx = use_context::<Ctx>();
     let store = ctx.store.read();
     let store_dir = store.dir.clone();
+    let typed = store.files();
     let folder = store.dir.join(DICTIONARY_DIR);
     let written = store
         .state
@@ -18,7 +19,7 @@ pub fn Dictionaries() -> Element {
         Some(sources) => sources.iter().map(|s| source_name(&folder, s)).collect(),
         None => default_dictionaries(&store_dir),
     };
-    let custom = store_dir.join(USER_CUSTOM_FILE);
+    let custom = typed.custom;
     let custom_path = custom.clone();
     let mut items = vec![ListItem {
         name: USER_CUSTOM.to_owned(),
@@ -26,7 +27,7 @@ pub fn Dictionaries() -> Element {
         description: Some("あなたが登録した語。いつも使い、外せません。".to_owned()),
         meta: file_size(&custom),
         convert: None,
-        warning: invalid_lines(&custom, true),
+        warning: unreachable(&custom).or_else(|| invalid_lines(&custom, true)),
         chip: None,
     }];
     items.extend(file_items(&folder, &files, &chosen));
@@ -131,7 +132,7 @@ pub fn Dictionaries() -> Element {
         OfficialDictionaries { chosen: chosen_for_official }
         OtherDictionaries { folder: folder.clone(), custom: custom_path.clone() }
         HiddenWords { custom: custom_path }
-        PickRecord { path: store_dir.join(SELECTIONS_FILE) }
+        PickRecord { path: typed.selections }
         RankingModel {}
     }
 }
@@ -495,10 +496,11 @@ fn PickRecord(path: PathBuf) -> Element {
     let mut error = use_signal(|| None::<String>);
     let _ = generation();
     let kept = path.exists();
+    let cannot_reach = unreachable(&path);
     rsx! {
         Group {
             title: "よく選ぶ候補",
-            note: "何度も選んだ候補は、その読みで次から先に出ます。この記録は、読みと選んだ候補を、このコンピューターの中にあなたのアカウントだけが読めるファイルとして残します。消すと、最初から覚え直します。",
+            note: "何度も選んだ候補は、その読みで次から先に出ます。この記録は、読みと選んだ候補を、あなたのアカウントだけが読めるファイルとして残します。消すと、最初から覚え直します。",
             div { class: "row",
                 div { class: "row-main",
                     div { class: "row-text",
@@ -525,6 +527,9 @@ fn PickRecord(path: PathBuf) -> Element {
                         }
                     }
                 }
+            }
+            if let Some(cannot_reach) = cannot_reach {
+                p { class: "error", "{cannot_reach}" }
             }
             if let Some(error) = error() {
                 p { class: "error", "{error}" }

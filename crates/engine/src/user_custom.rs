@@ -160,8 +160,10 @@ impl LineSink for FileSink {
                 "locked elsewhere; written again later",
             ));
         };
-        let mut file =
-            private(OpenOptions::new().read(true).append(true).create(true)).open(&self.path)?;
+        let mut file = open_private(
+            OpenOptions::new().read(true).append(true).create(true),
+            &self.path,
+        )?;
         append_line(&mut file, line)
     }
 }
@@ -360,8 +362,10 @@ impl Partial {
         let write = WRITES.fetch_add(1, Ordering::Relaxed);
         partial.push(format!(".{}-{write}.partial", std::process::id()));
         let partial = Self(Some(PathBuf::from(partial)));
-        let mut file = private(OpenOptions::new().write(true).create(true).truncate(true))
-            .open(partial.path())?;
+        let mut file = open_private(
+            OpenOptions::new().write(true).create(true).truncate(true),
+            partial.path(),
+        )?;
         file.write_all(bytes)?;
         if sync {
             file.sync_all()?;
@@ -388,11 +392,85 @@ impl Drop for Partial {
     }
 }
 
-/// Makes a file it creates readable and writable by its owner only.
-pub(crate) fn private(options: &mut OpenOptions) -> &mut OpenOptions {
+/// Opens `path`, making a file it creates readable and writable by its owner
+/// only.
+pub(crate) fn open_private(options: &mut OpenOptions, path: &Path) -> io::Result<File> {
     #[cfg(unix)]
     std::os::unix::fs::OpenOptionsExt::mode(options, 0o600);
-    options
+    // A new file would take the access its folder passes on: the user's own
+    // for the settings folder, but maybe everyone's for a folder the settings
+    // name. Made with its own access, it is never open to others, not even
+    // for the moment before its access could be changed.
+    #[cfg(windows)]
+    match create_owned(path) {
+        Err(error) if error.kind() == io::ErrorKind::AlreadyExists => {}
+        made => return made,
+    }
+    options.open(path)
+}
+
+/// A new file at `path`, for reading and writing, that only its owner and
+/// the system may open, passing on no access from its folder.
+#[cfg(windows)]
+fn create_owned(path: &Path) -> io::Result<File> {
+    use std::os::windows::ffi::OsStrExt;
+    use std::os::windows::io::FromRawHandle;
+
+    use windows_sys::Win32::Foundation::{
+        GENERIC_READ, GENERIC_WRITE, INVALID_HANDLE_VALUE, LocalFree,
+    };
+    use windows_sys::Win32::Security::Authorization::{
+        ConvertStringSecurityDescriptorToSecurityDescriptorW, SDDL_REVISION_1,
+    };
+    use windows_sys::Win32::Security::SECURITY_ATTRIBUTES;
+    use windows_sys::Win32::Storage::FileSystem::{
+        CREATE_NEW, CreateFileW, FILE_ATTRIBUTE_NORMAL, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    let wide = |text: &std::ffi::OsStr| text.encode_wide().chain([0]).collect::<Vec<u16>>();
+    let sddl = wide("D:P(A;;FA;;;OW)(A;;FA;;;SY)".as_ref());
+    let path = wide(path.as_os_str());
+    let mut descriptor = std::ptr::null_mut();
+    // SAFETY: the string ends in a nul, and the descriptor made is freed below.
+    let made = unsafe {
+        ConvertStringSecurityDescriptorToSecurityDescriptorW(
+            sddl.as_ptr(),
+            SDDL_REVISION_1,
+            &mut descriptor,
+            std::ptr::null_mut(),
+        )
+    };
+    if made == 0 {
+        return Err(io::Error::last_os_error());
+    }
+    let attributes = SECURITY_ATTRIBUTES {
+        nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
+        lpSecurityDescriptor: descriptor,
+        bInheritHandle: 0,
+    };
+    // SAFETY: the path ends in a nul, and the attributes outlive the call.
+    // Shared as the standard library opens files, so others' locks and
+    // replacements work alike.
+    let handle = unsafe {
+        CreateFileW(
+            path.as_ptr(),
+            GENERIC_READ | GENERIC_WRITE,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            &attributes,
+            CREATE_NEW,
+            FILE_ATTRIBUTE_NORMAL,
+            std::ptr::null_mut(),
+        )
+    };
+    let error = (handle == INVALID_HANDLE_VALUE).then(io::Error::last_os_error);
+    // SAFETY: made by the conversion above, which allocates it locally.
+    unsafe { LocalFree(descriptor) };
+    match error {
+        Some(error) => Err(error),
+        // SAFETY: a handle just opened, owned by nothing else.
+        None => Ok(unsafe { File::from_raw_handle(handle) }),
+    }
 }
 
 /// An exclusive lock on a file beside another, `<file>.lock`, held until
@@ -522,6 +600,30 @@ mod tests {
         };
         append_line(&mut file, "きしゃ\t記者").unwrap();
         assert_eq!(file.bytes, "かく\t書く\nきしゃ\t記者\n".as_bytes());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn a_file_made_on_windows_is_kept_from_others_whatever_its_folder_lets_them_read() {
+        use std::process::Command;
+        let dir = std::env::temp_dir().join(format!("kanaemi-shared-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        let everyone = Command::new("icacls")
+            .arg(&dir)
+            .args(["/grant", "*S-1-1-0:(OI)(CI)(R)"])
+            .status()
+            .unwrap();
+        assert!(everyone.success());
+        let appended = dir.join("custom.tsv");
+        FileSink::new(&appended).append("きしゃ\t記者").unwrap();
+        let replaced = dir.join("selections.tsv");
+        replace_file(&replaced, "きしゃ\t記者\n").unwrap();
+        for path in [appended, replaced] {
+            let output = Command::new("icacls").arg(&path).output().unwrap();
+            let acl = String::from_utf8_lossy(&output.stdout);
+            assert!(!acl.contains("Everyone"), "{acl}");
+        }
     }
 
     #[test]

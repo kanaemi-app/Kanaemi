@@ -27,6 +27,96 @@ pub const TEXT_EXTENSION: &str = "tsv";
 /// The extension of binary dictionaries.
 pub(crate) const BINARY_EXTENSION: &str = "kdic";
 
+/// Where the files holding what the user typed are. Each may be put outside
+/// the settings folder, as in a folder synced between devices.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Files {
+    /// The user custom dictionary.
+    pub custom: PathBuf,
+    /// The record of which candidates the user picks.
+    pub selections: PathBuf,
+}
+
+impl Files {
+    /// Where they are when the settings name no other place: in `dir`, the
+    /// settings folder.
+    pub fn in_folder(dir: impl AsRef<Path>) -> Self {
+        let dir = dir.as_ref();
+        Self {
+            custom: dir.join(USER_CUSTOM_FILE),
+            selections: dir.join(SELECTIONS_FILE),
+        }
+    }
+}
+
+/// Whether `path` is where the settings folder `dir` keeps something other
+/// than the file whose default is `own`: another file of its own, or a
+/// folder the IME reads every file of, and on Windows lets sandboxed
+/// applications read. A lock beside a file is kept for that file, wherever.
+pub(crate) fn kept_for_else(path: &Path, dir: &Path, own: &Path) -> bool {
+    let path = place(path);
+    if path
+        .extension()
+        .is_some_and(|extension| extension == "lock")
+    {
+        return true;
+    }
+    let files = [FILE_NAME, MODEL_FILE, USER_CUSTOM_FILE, SELECTIONS_FILE];
+    let folders = [DICTIONARY_DIR, ROMAJI_DIR, FUNCTIONS_DIR];
+    files
+        .iter()
+        .map(|file| place(&dir.join(file)))
+        .any(|file| file == path && file != place(own))
+        || folders
+            .iter()
+            .any(|folder| path.starts_with(place(&dir.join(folder))))
+}
+
+/// The place `path` names, to tell whether two paths name one file: with
+/// `.` and `..` worked out, without asking the file system, and in one case
+/// where the file systems of the OS tell no case apart by default.
+pub(crate) fn place(path: &Path) -> PathBuf {
+    let mut out = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir
+                if matches!(out.components().next_back(), Some(Component::Normal(_))) =>
+            {
+                out.pop();
+            }
+            component => out.push(component),
+        }
+    }
+    if cfg!(any(windows, target_os = "macos")) {
+        out = PathBuf::from(out.to_string_lossy().to_lowercase());
+    }
+    out
+}
+
+/// The file `written` names: absolute, under the home folder with a leading
+/// `~`, or else from `dir`, the settings folder. `None` when it names none,
+/// as when empty or without a home folder to put it under.
+pub(crate) fn file_path(written: &str, dir: &Path) -> Option<PathBuf> {
+    if written.is_empty() {
+        return None;
+    }
+    let separators: &[char] = if cfg!(windows) { &['/', '\\'] } else { &['/'] };
+    match written.strip_prefix('~') {
+        Some(rest) if rest.is_empty() || rest.starts_with(separators) => {
+            Some(home()?.join(rest.trim_start_matches(separators)))
+        }
+        _ => Some(dir.join(written)),
+    }
+}
+
+fn home() -> Option<PathBuf> {
+    let variable = if cfg!(windows) { "USERPROFILE" } else { "HOME" };
+    std::env::var_os(variable)
+        .map(PathBuf::from)
+        .filter(|path| path.is_absolute())
+}
+
 /// Every setting with its default, commented out: what the IME puts in place
 /// when there is no settings file yet.
 pub const TEMPLATE: &str = include_str!("../assets/config.toml");

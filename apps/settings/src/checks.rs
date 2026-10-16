@@ -20,6 +20,40 @@ pub fn invalid_lines(path: &Path, user_custom: bool) -> Option<String> {
     KNOWN.with(|known| known.get(&[path.to_owned()], || read_invalid(path, user_custom)))
 }
 
+/// Why the IME cannot read or write the file with typed words at `path`, or
+/// `None` when it can. A missing file is fine: it is made when written.
+pub fn unreachable(path: &Path) -> Option<String> {
+    if let Some(folder) = path.parent()
+        && !folder.is_dir()
+    {
+        return Some(format!(
+            "フォルダ {} がありません。できるまで空として扱い、できたら書きます",
+            folder.display()
+        ));
+    }
+    let exists = match fs::File::open(path) {
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(error) => return Some(format!("読めません：{error}")),
+        Ok(_) => true,
+    };
+    // A rewrite makes a new file beside it and a lock may have to be made:
+    // the folder must take new files, whatever the files already there allow.
+    let mut probe = path.as_os_str().to_owned();
+    probe.push(format!(".{}.check", std::process::id()));
+    let writes = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
+        .map(|_| {
+            let _ = fs::remove_file(&probe);
+        });
+    let writes = match writes {
+        Ok(()) if exists => fs::OpenOptions::new().append(true).open(path).map(drop),
+        writes => writes,
+    };
+    writes.err().map(|error| format!("書けません：{error}"))
+}
+
 fn read_invalid(path: &Path, user_custom: bool) -> Option<String> {
     let (_, invalid) = if user_custom {
         TextDictionary::read_user_custom(path).ok()?
@@ -105,6 +139,65 @@ mod tests {
             said.as_deref(),
             Some("読めない行が 1 行あります（1 行目：UTF-8 でない）")
         );
+    }
+
+    #[test]
+    fn a_file_with_typed_words_that_can_be_reached_has_nothing_to_say() {
+        let dir = temp_path("reached");
+        fs::create_dir_all(&dir).unwrap();
+        assert_eq!(
+            unreachable(&dir.join("missing.tsv")),
+            None,
+            "made when written"
+        );
+        fs::write(dir.join("there.tsv"), "").unwrap();
+        assert_eq!(unreachable(&dir.join("there.tsv")), None);
+    }
+
+    #[test]
+    fn a_file_with_typed_words_in_a_folder_that_is_missing_says_so() {
+        let folder = temp_path("missing-folder").join("sync");
+        let said = unreachable(&folder.join("custom.tsv")).unwrap();
+        assert!(
+            said.starts_with(&format!("フォルダ {} がありません", folder.display())),
+            "{said}"
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_typed_words_that_cannot_be_written_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_path("read-only");
+        fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("custom.tsv");
+        fs::write(&path, "").unwrap();
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o400)).unwrap();
+        let said = unreachable(&path);
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o600)).unwrap();
+        assert!(said.unwrap().starts_with("書けません："));
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn a_file_with_typed_words_in_a_folder_that_cannot_be_written_says_so() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = temp_path("read-only-folder");
+        fs::create_dir_all(&dir).unwrap();
+        // The file and its lock are already there, writable themselves.
+        fs::write(dir.join("written.tsv"), "").unwrap();
+        fs::write(dir.join("written.tsv.lock"), "").unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o500)).unwrap();
+        let said = ["selections.tsv", "written.tsv"].map(|name| unreachable(&dir.join(name)));
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o700)).unwrap();
+        for said in said {
+            assert!(said.unwrap().starts_with("書けません："));
+        }
+        let left: Vec<_> = fs::read_dir(&dir)
+            .unwrap()
+            .map(|e| e.unwrap().file_name())
+            .collect();
+        assert_eq!(left.len(), 2, "nothing left behind: {left:?}");
     }
 
     #[test]

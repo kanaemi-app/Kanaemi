@@ -4,8 +4,8 @@
 use std::path::{Path, PathBuf};
 
 use kanaemi_config::{
-    DictionarySource, Editor, FILE_NAME, Problem, ProblemKind, Settings, Value, parse_binding_key,
-    read_or_create,
+    DictionarySource, Editor, FILE_NAME, Files, Problem, ProblemKind, Settings, Value,
+    parse_binding_key, read_or_create,
 };
 use kanaemi_engine::replace_file;
 
@@ -41,6 +41,14 @@ impl Store {
             .and_then(|text| Editor::new(&text))
             .map(|editor| Loaded::new(editor, &dir));
         Self { dir, state }
+    }
+
+    /// Where the files with typed words are, as the IME finds them.
+    pub fn files(&self) -> Files {
+        match &self.state {
+            Ok(loaded) => loaded.settings.files.clone(),
+            Err(_) => Files::in_folder(&self.dir),
+        }
     }
 
     /// Writes `value` at `path`, or with `None` removes what is written there
@@ -291,6 +299,27 @@ mod tests {
         store
             .change(&["dictionaries"], names(&["custom", "a.kdic"]))
             .unwrap();
+    }
+
+    #[test]
+    fn the_files_with_typed_words_are_where_the_settings_put_them() {
+        let dir = temp_dir("files");
+        assert_eq!(Store::open(dir.clone()).files(), Files::in_folder(&dir));
+        fs::write(
+            dir.join(FILE_NAME),
+            "[files]\ncustom = \"sync/custom.tsv\"\n",
+        )
+        .unwrap();
+        assert_eq!(
+            Store::open(dir.clone()).files().custom,
+            dir.join("sync/custom.tsv")
+        );
+        fs::write(dir.join(FILE_NAME), "[files\n").unwrap();
+        assert_eq!(
+            Store::open(dir.clone()).files(),
+            Files::in_folder(&dir),
+            "where the IME puts them when it cannot read the settings"
+        );
     }
 
     #[test]

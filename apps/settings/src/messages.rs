@@ -48,6 +48,12 @@ pub fn describe(kind: &ProblemKind) -> String {
         ProblemKind::OutsideFolder(name) => {
             format!("「{name}」はフォルダの外を指しています（フォルダの中の名前で書きます）")
         }
+        ProblemKind::NotAFile => {
+            "ファイルのパスを書いてください（絶対パスか、設定のフォルダからの相対パス）".to_owned()
+        }
+        ProblemKind::KeptForElse => {
+            "そこはかなえみがほかのものを置く場所です（設定ファイル、並べ替えのモデル、もう一方のファイル、dictionaries・romaji・functions フォルダの中、.lock のファイル）".to_owned()
+        }
         ProblemKind::PastedByApplication => {
             "このキーはアプリ自身が貼り付けに使うので、登録する語には貼れません（アプリが未確定文字列の外に貼ります）。Ctrl+Y など別のキーにしてください".to_owned()
         }
