@@ -26,7 +26,8 @@ pub struct Page {
     pub selected: usize,
     /// For a highlighted reading to complete with, its other candidates.
     pub more: Vec<String>,
-    /// Which page is shown of how many, when there are more than one.
+    /// How the list was ranked, and which page is shown of how many, when
+    /// there are more than one.
     pub footer: Option<String>,
 }
 
@@ -41,8 +42,16 @@ impl Page {
                 .collect(),
             selected: view.selected,
             more: view.more.clone(),
-            footer: (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages)),
+            footer: footer(view),
         }
+    }
+}
+
+fn footer(view: &CandidateView) -> Option<String> {
+    let page = (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages));
+    match (view.ranking_label(), page) {
+        (Some(label), Some(page)) => Some(format!("{label}  {page}")),
+        (label, page) => label.map(str::to_owned).or(page),
     }
 }
 
@@ -154,6 +163,7 @@ mod tests {
             page: 1,
             pages: 3,
             more: vec!["感じ".to_owned()],
+            ranked_by_model: None,
         };
         assert_eq!(
             Page::new(&view),
@@ -242,8 +252,29 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(Page::new(&view).footer, None);
+    }
+
+    #[test]
+    fn the_footer_tells_how_the_list_was_ranked_before_the_page() {
+        let view = |pages, ranked_by_model| CandidateView {
+            items: vec![candidate("漢字", None, None)],
+            selected: 0,
+            page: 0,
+            pages,
+            more: Vec::new(),
+            ranked_by_model,
+        };
+        assert_eq!(
+            Page::new(&view(3, Some(true))).footer.as_deref(),
+            Some("モデルあり  ‹ 1 / 3 ›")
+        );
+        assert_eq!(
+            Page::new(&view(1, Some(false))).footer.as_deref(),
+            Some("モデルなし")
+        );
     }
 
     #[test]

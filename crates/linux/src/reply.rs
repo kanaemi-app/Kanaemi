@@ -105,8 +105,9 @@ fn items(items: &[Candidate]) -> Vec<Item> {
 }
 
 /// What the auxiliary text tells beside the panel: the page shown of how
-/// many, when there are more than one, then a highlighted reading's other
-/// candidates, or the highlighted candidate with its dictionary.
+/// many, when there are more than one, how the list was ranked, then a
+/// highlighted reading's other candidates, or the highlighted candidate
+/// with its dictionary.
 fn aside(view: &CandidateView) -> Option<String> {
     let page = (view.pages > 1).then(|| format!("{} / {}", view.page + 1, view.pages));
     let about = if view.more.is_empty() {
@@ -117,10 +118,11 @@ fn aside(view: &CandidateView) -> Option<String> {
     } else {
         Some(view.more.join(&SEPARATOR.to_string()))
     };
-    match (page, about) {
-        (Some(page), Some(about)) => Some(format!("{page}{SEPARATOR}{about}")),
-        (page, about) => page.or(about),
-    }
+    let parts: Vec<String> = [page, view.ranking_label().map(str::to_owned), about]
+        .into_iter()
+        .flatten()
+        .collect();
+    (!parts.is_empty()).then(|| parts.join(&SEPARATOR.to_string()))
 }
 
 /// How the mode is named by the caret.
@@ -220,6 +222,7 @@ mod tests {
                 page: 0,
                 pages: 1,
                 more: Vec::new(),
+                ranked_by_model: None,
             }),
             Signal::Candidates(vec![item("漢字", None), item("感じ", None)], 1, None)
         );
@@ -240,6 +243,7 @@ mod tests {
                 page: 0,
                 pages: 1,
                 more: Vec::new(),
+                ranked_by_model: None,
             }),
             Signal::Candidates(
                 vec![item("漢字　ユーザー辞書", Some(2)), item("カンジ", None)],
@@ -264,6 +268,7 @@ mod tests {
                 page: 0,
                 pages: 1,
                 more: vec!["感じ".to_owned(), "幹事".to_owned()],
+                ranked_by_model: None,
             }),
             Signal::Candidates(
                 vec![item("かんじ　漢字", Some(3)), item("かお", None)],
@@ -284,6 +289,7 @@ mod tests {
             page: 1,
             pages: 2,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(
             shown(view(Some("ユーザー辞書"))),
@@ -296,6 +302,37 @@ mod tests {
         assert_eq!(
             shown(view(None)),
             Signal::Candidates(vec![item("工", None)], 0, Some("2 / 2".to_owned()))
+        );
+    }
+
+    #[test]
+    fn the_aux_text_tells_how_the_list_was_ranked_after_the_page() {
+        let view = |pages| CandidateView {
+            items: vec![Candidate {
+                source: Some("ユーザー辞書".to_owned()),
+                ..candidate("工")
+            }],
+            selected: 0,
+            page: 0,
+            pages,
+            more: Vec::new(),
+            ranked_by_model: Some(false),
+        };
+        assert_eq!(
+            shown(view(2)),
+            Signal::Candidates(
+                vec![item("工　ユーザー辞書", Some(1))],
+                0,
+                Some("1 / 2　モデルなし　工　ユーザー辞書".to_owned())
+            )
+        );
+        assert_eq!(
+            shown(view(1)),
+            Signal::Candidates(
+                vec![item("工　ユーザー辞書", Some(1))],
+                0,
+                Some("モデルなし　工　ユーザー辞書".to_owned())
+            )
         );
     }
 
@@ -347,6 +384,7 @@ mod tests {
                 page: 0,
                 pages: 1,
                 more: Vec::new(),
+                ranked_by_model: None,
             }),
             ..output()
         };

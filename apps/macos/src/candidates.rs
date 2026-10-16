@@ -106,10 +106,14 @@ pub fn excerpt(meaning: &str) -> String {
     shorten(&lines.join("\n"), MEANING_CHARS)
 }
 
-/// What tells the page shown and how many there are, under the rows; none
-/// for a list that fits a page.
+/// What tells, under the rows, how the list was ranked, and the page shown
+/// and how many there are; no page for a list that fits one.
 pub fn footer(view: &CandidateView) -> Option<String> {
-    (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages))
+    let page = (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages));
+    match (view.ranking_label(), page) {
+        (Some(label), Some(page)) => Some(format!("{label}  {page}")),
+        (label, page) => label.map(str::to_owned).or(page),
+    }
 }
 
 /// What the pane beside the list shows: for a reading to complete with,
@@ -372,6 +376,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(
             rows(&view),
@@ -407,6 +412,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         let shown = rows(&view);
         assert_eq!(shown[0].beside(), Some("漢字"));
@@ -427,6 +433,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(rows(&view)[0].beside(), Some("ユーザー辞書"));
     }
@@ -442,6 +449,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(meaning_wanted(&view(0)), Some("漢字"));
         assert_eq!(
@@ -464,6 +472,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(to_look_up(&view), strings(&["感じ", "漢字", "幹事"]));
     }
@@ -492,6 +501,7 @@ mod tests {
             page: 0,
             pages: 1,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         let shown = rows(&view);
         assert_eq!(spoken(&shown[0]), "漢字、ユーザー辞書");
@@ -705,9 +715,27 @@ mod tests {
             page,
             pages,
             more: Vec::new(),
+            ranked_by_model: None,
         };
         assert_eq!(footer(&view(1, 5)).as_deref(), Some("‹ 2 / 5 ›"));
         assert_eq!(footer(&view(0, 1)), None);
+    }
+
+    #[test]
+    fn the_footer_tells_how_the_list_was_ranked_before_the_page() {
+        let view = |pages, ranked_by_model| CandidateView {
+            items: vec![candidate("高", None)],
+            selected: 0,
+            page: 0,
+            pages,
+            more: Vec::new(),
+            ranked_by_model,
+        };
+        assert_eq!(
+            footer(&view(5, Some(true))).as_deref(),
+            Some("モデルあり  ‹ 1 / 5 ›")
+        );
+        assert_eq!(footer(&view(1, Some(false))).as_deref(), Some("モデルなし"));
     }
 
     #[test]

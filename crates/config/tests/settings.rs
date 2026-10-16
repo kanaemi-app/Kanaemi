@@ -138,6 +138,37 @@ fn the_mode_indicator_can_be_turned_off() {
 }
 
 #[test]
+fn the_ranking_model_is_used_unless_turned_off() {
+    let (settings, problems) = load("");
+    assert_eq!(problems, Vec::<String>::new());
+    assert!(settings.ranking_model);
+    let (settings, problems) = load("[ranking]\nmodel = false");
+    assert_eq!(problems, Vec::<String>::new());
+    assert!(!settings.ranking_model);
+    let (settings, problems) = load("[ranking]\nmodel = \"no\"\nunknown = 1");
+    assert_eq!(problems, ["ranking.model", "ranking.unknown"]);
+    assert!(settings.ranking_model);
+}
+
+#[test]
+fn the_model_is_toggled_only_while_choosing_a_candidate() {
+    let (settings, problems) = load("[keys.candidates]\n\"f12\" = \"@toggle-model\"");
+    assert_eq!(problems, Vec::<String>::new());
+    let f12 = Chord {
+        key: Key::F(12),
+        mods: Modifiers::default(),
+    };
+    assert_eq!(
+        target(&settings.config.bindings.candidates, f12),
+        Some(Action::ToggleModel)
+    );
+    for scene in ["reading", "completion", "kana", "registration"] {
+        let (_, problems) = load(&format!("[keys.{scene}]\n\"f12\" = \"@toggle-model\""));
+        assert_eq!(problems, [format!("keys.{scene}.f12")], "{scene}");
+    }
+}
+
+#[test]
 fn unfinished_romaji_is_kept_unless_turned_off() {
     let (settings, problems) = load("");
     assert_eq!(problems, Vec::<String>::new());
@@ -355,6 +386,19 @@ fn ctrl_n_and_ctrl_p_turn_the_page_of_a_list_shown_and_convert_nothing() {
     }
     assert_eq!(target(&bindings.reading, ctrl('n')), None);
     assert_eq!(target(&bindings.reading, ctrl('p')), None);
+}
+
+#[test]
+fn ctrl_r_toggles_the_model_while_choosing_and_nowhere_else() {
+    let (settings, problems) = load("");
+    assert_eq!(problems, Vec::<String>::new());
+    let bindings = &settings.config.bindings;
+    assert_eq!(
+        target(&bindings.candidates, ctrl('r')),
+        Some(Action::ToggleModel)
+    );
+    assert_eq!(target(&bindings.completion, ctrl('r')), None);
+    assert_eq!(target(&bindings.reading, ctrl('r')), None);
 }
 
 #[test]
@@ -1340,6 +1384,7 @@ const PLACES: &[(&str, &[&str])] = &[
     ),
     ("romaji", &["tables", "keep_unfinished", "unknown"]),
     ("control", &["port", "unknown"]),
+    ("ranking", &["model", "unknown"]),
     ("functions", &["disabled", "unknown"]),
     (
         "keys",

@@ -280,6 +280,7 @@ fn action_label(mode: &str, action: Action) -> &'static str {
         (_, Action::End) => "カーソルを末尾へ",
         (_, Action::Register) => "語を登録する",
         (_, Action::Forget) => "この候補を以後出さない",
+        (_, Action::ToggleModel) => "並べ替えのモデルを切り替える",
         (_, Action::Form(Form::Hiragana)) => "ひらがなにする",
         (_, Action::Form(Form::Katakana)) => "カタカナにする",
         (_, Action::Form(Form::HalfKatakana)) => "半角カタカナにする",

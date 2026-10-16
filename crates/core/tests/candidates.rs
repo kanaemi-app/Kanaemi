@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use kanaemi_core::{Action, Binding, Event, Form, Gesture, Key, Mode, Modifiers};
+use kanaemi_core::{Action, Binding, Event, Form, Gesture, Key, Mode, Modifiers, Output};
 
 #[test]
 fn no_matching_candidate_shows_katakana_then_registration() {
@@ -847,4 +847,91 @@ fn a_single_candidate_is_shown_without_a_list() {
     let out = t.key(Key::Space);
     assert_eq!(out.preedit, "»〜");
     assert_eq!(out.candidates, None);
+}
+
+fn toggling_the_model() -> T {
+    let mut config = config();
+    config.bindings.candidates.push(Binding {
+        from: plain(Key::F(12)),
+        gesture: Gesture::Press,
+        to: Action::ToggleModel,
+    });
+    T::with_config(config)
+}
+
+#[test]
+fn toggling_the_model_ranks_the_candidates_again_keeping_the_one_chosen() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";kanji");
+    let out = t.key(Key::Space);
+    assert_eq!(surfaces(&out)[..3], ["漢字", "感じ", "幹事"]);
+    let out = t.key(Key::F(12));
+    assert_eq!(surfaces(&out)[..3], ["幹事", "感じ", "漢字"]);
+    assert_eq!(out.preedit, "»漢字");
+    assert_eq!(out.candidates.unwrap().selected, 2);
+    let out = t.key(Key::F(12));
+    assert_eq!(surfaces(&out)[..3], ["漢字", "感じ", "幹事"]);
+    assert_eq!(out.preedit, "»漢字");
+}
+
+#[test]
+fn a_form_of_the_reading_stays_chosen_when_the_model_is_toggled() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";kanji");
+    t.key(Key::Space);
+    assert_eq!(t.shifted(Key::Space).preedit, "»kanji");
+    assert_eq!(t.key(Key::F(12)).preedit, "»kanji");
+}
+
+#[test]
+fn toggling_the_model_keeps_the_okurigana_converted_with() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";i;tta");
+    let out = t.key(Key::F(12));
+    assert_eq!(surfaces(&out)[..2], ["言った", "行った"]);
+    assert_eq!(out.preedit, "»行った");
+}
+
+#[test]
+fn the_readings_completed_with_show_what_they_convert_to_first_as_ranked_now() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";ka");
+    t.key(Key::Tab);
+    t.key(Key::Space);
+    t.key(Key::F(12));
+    let view = t.key(Key::Esc).candidates.unwrap();
+    let previews: Vec<Option<&str>> = view.items.iter().map(|c| c.preview.as_deref()).collect();
+    assert_eq!(previews[..2], [Some("核"), Some("仮名")]);
+}
+
+#[test]
+fn the_list_tells_whether_the_model_ranked_it() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";kanji");
+    let ranked = |out: Output| out.candidates.unwrap().ranked_by_model;
+    assert_eq!(ranked(t.key(Key::Space)), Some(true));
+    assert_eq!(ranked(t.key(Key::F(12))), Some(false));
+    assert_eq!(
+        ranked(t.key(Key::Space)),
+        Some(false),
+        "until toggled again"
+    );
+}
+
+#[test]
+fn the_list_is_labelled_by_how_it_was_ranked_when_the_converter_tells() {
+    let mut t = toggling_the_model();
+    t.kana();
+    t.typ(";kanji");
+    let label = |out: Output| out.candidates.unwrap().ranking_label();
+    assert_eq!(label(t.key(Key::Space)), Some("モデルあり"));
+    assert_eq!(label(t.key(Key::F(12))), Some("モデルなし"));
+    let mut view = t.key(Key::Space).candidates.unwrap();
+    view.ranked_by_model = None;
+    assert_eq!(view.ranking_label(), None);
 }

@@ -33,6 +33,8 @@ pub struct Settings {
     pub romaji_tables: Option<Vec<String>>,
     /// The port to take requests from other programs on; `None` takes none.
     pub control_port: Option<u16>,
+    /// Whether candidates are ranked with the ranking model, until toggled.
+    pub ranking_model: bool,
     /// The functions not to use, as the functions folder names them, or with
     /// [`BUILTIN_PREFIX`] for a built-in one.
     pub disabled_functions: Vec<String>,
@@ -171,6 +173,7 @@ impl Settings {
                 dictionaries: None,
                 romaji_tables: None,
                 control_port: None,
+                ranking_model: true,
                 disabled_functions: Vec::new(),
                 application_tables: ApplicationTables::default(),
                 registration_tables: RegistrationTables::default(),
@@ -227,6 +230,7 @@ impl Reader<'_> {
                 "romaji" => self.section(&name, value, Self::romaji),
                 "keys" => self.section(&name, value, Self::keys),
                 "control" => self.section(&name, value, Self::control),
+                "ranking" => self.section(&name, value, Self::ranking),
                 "functions" => self.section(&name, value, Self::functions),
                 _ => self.problem(name, ProblemKind::UnknownItem),
             }
@@ -294,6 +298,16 @@ impl Reader<'_> {
         match value.as_integer().and_then(|port| u16::try_from(port).ok()) {
             Some(port) if port > 0 => self.settings.control_port = Some(port),
             _ => self.problem(item, ProblemKind::NotAPort),
+        }
+    }
+
+    fn ranking(&mut self, item: &str, key: &str, value: Value) {
+        if key != "model" {
+            return self.problem(item, ProblemKind::UnknownItem);
+        }
+        match value.as_bool() {
+            Some(model) => self.settings.ranking_model = model,
+            None => self.problem(item, ProblemKind::NotABool),
         }
     }
 
