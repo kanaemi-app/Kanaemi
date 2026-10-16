@@ -19,6 +19,23 @@ pub struct CandidateView {
     /// For a reading to complete with, highlighted: the candidates
     /// converting it gives after its first, in order, as many as fit a page.
     pub more: Vec<String>,
+    /// For candidates, what [`crate::Converter::ranks_by_model`] said when
+    /// they were converted, for the host to show. `None` for readings to
+    /// complete with.
+    pub ranked_by_model: Option<bool>,
+}
+
+impl CandidateView {
+    /// What the host shows with the list to tell how it was ranked.
+    pub fn ranking_label(&self) -> Option<&'static str> {
+        self.ranked_by_model.map(|model| {
+            if model {
+                "モデルあり"
+            } else {
+                "モデルなし"
+            }
+        })
+    }
 }
 
 /// A word being registered, a reading inside it included. The keys are the

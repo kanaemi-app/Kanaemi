@@ -37,6 +37,16 @@ fn a_top_level_item_is_uncommented_in_place() {
 }
 
 #[test]
+fn the_ranking_model_is_turned_off_in_the_template_where_it_is_commented() {
+    let text = edited(TEMPLATE, |e| e.set(&["ranking", "model"], false));
+    assert_eq!(
+        text,
+        TEMPLATE.replace("#[ranking]\n#model = true\n", "[ranking]\nmodel = false\n")
+    );
+    assert!(!settings(&text).ranking_model);
+}
+
+#[test]
 fn a_quoted_key_is_found_in_the_template() {
     let text = edited(TEMPLATE, |e| e.set(&["keys", "reading", "ctrl+h"], "@none"));
     assert_eq!(

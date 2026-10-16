@@ -135,6 +135,9 @@ impl fmt::Display for LoggedOutput<'_> {
                 view.page + 1,
                 view.pages
             )?;
+            if let Some(model) = view.ranked_by_model {
+                write!(f, ",model={}", if model { "on" } else { "off" })?;
+            }
         }
         if let Some(chord) = output.send {
             write!(f, " send={}", LoggedChord(chord))?;
@@ -447,13 +450,14 @@ mod tests {
                 page: 0,
                 pages: 3,
                 more: vec!["X".to_owned()],
+                ranked_by_model: Some(false),
             }),
             ..output()
         })
         .to_string();
         assert_eq!(
             told,
-            "{consumed mode=kana preedit=\"»漢漢\" cursor=3 candidates=2/2,page=1/3}"
+            "{consumed mode=kana preedit=\"»漢漢\" cursor=3 candidates=2/2,page=1/3,model=off}"
         );
     }
 

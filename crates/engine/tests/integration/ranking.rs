@@ -114,6 +114,48 @@ fn an_engine_opened_again_without_a_model_ranks_by_the_rules() {
 }
 
 #[test]
+fn a_model_turned_off_ranks_by_the_rules_until_toggled_on() {
+    let mut e = engine(KISHA);
+    e.set_model(Some(model(16, &[("s\u{1f}貴社", 2.0)])));
+    e.set_model_enabled(false);
+    assert_eq!(surfaces(&e, "きしゃ"), ["記者", "汽車", "貴社"]);
+    assert_eq!(e.ranks_by_model(), Some(false));
+    e.toggle_model();
+    assert_eq!(surfaces(&e, "きしゃ")[0], "貴社");
+    assert_eq!(e.ranks_by_model(), Some(true));
+    e.toggle_model();
+    assert_eq!(surfaces(&e, "きしゃ")[0], "記者");
+}
+
+#[test]
+fn a_key_only_tried_leaves_the_model_as_it_was() {
+    let mut e = engine(KISHA);
+    e.set_model(Some(model(16, &[("s\u{1f}貴社", 2.0)])));
+    e.without_functions(|| e.toggle_model());
+    assert_eq!(e.ranks_by_model(), Some(true));
+}
+
+#[test]
+fn without_a_model_nothing_is_ranked_by_one_whether_on_or_off() {
+    let mut e = engine(KISHA);
+    assert_eq!(e.ranks_by_model(), Some(false));
+    e.toggle_model();
+    assert_eq!(e.ranks_by_model(), Some(false));
+    e.set_model(Some(model(16, &[])));
+    assert_eq!(e.ranks_by_model(), Some(false), "toggled off before");
+}
+
+#[test]
+fn an_engine_opened_again_keeps_the_model_toggled_off() {
+    let old = engine(KISHA);
+    old.toggle_model();
+    let mut new = engine(KISHA);
+    new.set_model(Some(model(16, &[("s\u{1f}貴社", 2.0)])));
+    new.take_over(old);
+    assert_eq!(surfaces(&new, "きしゃ")[0], "記者");
+}
+
+#[test]
 fn engines_rank_with_one_model_they_share() {
     let shared = model(16, &[("s\u{1f}貴社", 2.0)]);
     let mut first = engine(KISHA);

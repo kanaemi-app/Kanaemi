@@ -52,6 +52,9 @@ pub struct Profile {
     functions_stamp: functions::Stamp,
     /// As the settings name them.
     disabled_functions: Vec<String>,
+    /// Whether the settings say to rank with the model. The engine follows
+    /// only when it changes, so a toggle outlives other settings read again.
+    ranking_model: bool,
     settings_stamp: Option<kanaemi_engine::FileStamp>,
     dictionary_stamp: Stamp,
     user_stamp: FileStamp,
@@ -94,6 +97,7 @@ impl Profile {
         let functions = functions::open(&dir, &settings.disabled_functions);
         let mut engine = dictionaries::open_engine(&dir, settings.dictionaries.as_deref(), access);
         engine.set_functions(Some(functions.clone() as Rc<dyn Functions>));
+        engine.set_model_enabled(settings.ranking_model);
         let mut profile = Self {
             access,
             config: settings.config,
@@ -103,6 +107,7 @@ impl Profile {
             functions,
             functions_stamp,
             disabled_functions: settings.disabled_functions,
+            ranking_model: settings.ranking_model,
             settings_stamp,
             dictionary_stamp,
             user_stamp,
@@ -141,6 +146,14 @@ impl Profile {
             let (settings, stamp) = settings::read_stamped(&self.dir, self.access);
             functions_changed = settings.disabled_functions != self.disabled_functions;
             self.disabled_functions = settings.disabled_functions;
+            if std::mem::replace(&mut self.ranking_model, settings.ranking_model)
+                != settings.ranking_model
+            {
+                self.engine
+                    .0
+                    .borrow_mut()
+                    .set_model_enabled(settings.ranking_model);
+            }
             self.settings_stamp = stamp;
             self.config = settings.config;
             self.dictionaries = settings.dictionaries;
@@ -347,6 +360,20 @@ impl Converter for SharedEngine {
 
     fn preview(&self, reading: &str, limit: usize) -> Vec<String> {
         self.0.borrow().preview(reading, limit)
+    }
+
+    fn toggle_model(&self) {
+        let engine = self.0.borrow();
+        let before = engine.ranks_by_model();
+        engine.toggle_model();
+        let after = engine.ranks_by_model();
+        if after != before {
+            tracing::info!(ranks_by_model = ?after, "ranking model toggled");
+        }
+    }
+
+    fn ranks_by_model(&self) -> Option<bool> {
+        self.0.borrow().ranks_by_model()
     }
 }
 
@@ -636,6 +663,48 @@ mod tests {
         fs::set_permissions(dir.join(FILE_NAME), fs::Permissions::from_mode(0o600)).unwrap();
         profile.reload_if_changed();
         assert!(!profile.config().mode_indicator);
+    }
+
+    #[test]
+    fn the_model_toggled_stays_so_until_the_setting_for_it_changes() {
+        let dir = temp_dir("ranking-model");
+        fs::write(
+            dir.join(kanaemi_config::MODEL_FILE),
+            kanaemi_bench_support::ranking_model(10),
+        )
+        .unwrap();
+        let settings = dir.join(FILE_NAME);
+        fs::write(&settings, "[ranking]\nmodel = false\n").unwrap();
+        let mut profile = Profile::open(&dir);
+        let engine = profile.converter();
+        assert_eq!(engine.ranks_by_model(), Some(false));
+        engine.toggle_model();
+        assert_eq!(engine.ranks_by_model(), Some(true));
+        fs::write(
+            &settings,
+            "mode_indicator = false\n[ranking]\nmodel = false\n",
+        )
+        .unwrap();
+        age(&settings);
+        profile.reload_if_changed();
+        assert_eq!(
+            engine.ranks_by_model(),
+            Some(true),
+            "another setting changed"
+        );
+        fs::write(&settings, "[ranking]\nmodel = true\n").unwrap();
+        profile.reload_if_changed();
+        engine.toggle_model();
+        fs::write(&settings, "\n[ranking]\nmodel = true\n").unwrap();
+        age(&settings);
+        profile.reload_if_changed();
+        assert_eq!(engine.ranks_by_model(), Some(false));
+        fs::write(&settings, "[ranking]\nmodel = false\n").unwrap();
+        profile.reload_if_changed();
+        assert_eq!(engine.ranks_by_model(), Some(false));
+        fs::write(&settings, "").unwrap();
+        profile.reload_if_changed();
+        assert_eq!(engine.ranks_by_model(), Some(true), "the default");
     }
 
     #[test]

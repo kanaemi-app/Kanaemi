@@ -211,6 +211,12 @@ pub const GROUPS: &[(&str, &[Intent])] = &[
                 action: Action::Forget,
                 scenes: &["candidates"],
             },
+            Intent {
+                title: "並べ替えのモデルを切り替える",
+                note: "並べ替えのモデルを使うかどうかを切り替えて、候補を並べ直します。並びがモデルによるものかを見比べるためのもので、設定を変えるまで続きます",
+                action: Action::ToggleModel,
+                scenes: &["candidates"],
+            },
         ],
     ),
 ];

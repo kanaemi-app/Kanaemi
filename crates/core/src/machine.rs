@@ -44,6 +44,8 @@ struct Selection {
     /// The completion the word was converted from, to go on with when the
     /// keys that complete are pressed while choosing.
     completion: Option<Box<Completion>>,
+    /// What the converter said of its ranking when it gave `candidates`.
+    ranked_by_model: Option<bool>,
 }
 
 /// Shown after the selected candidate while asking whether to forget it.
@@ -1018,9 +1020,43 @@ impl<C: Converter> Core<C> {
             index: 0,
             forgetting: false,
             completion: self.completion.take().map(Box::new),
+            ranked_by_model: self.converter.ranks_by_model(),
         };
         self.offer_forms(&mut selection);
         self.state = State::Candidates(selection);
+    }
+
+    /// Converts the word of `selection` again, ranked as the converter ranks
+    /// now, keeping the candidate chosen and what was typed while choosing.
+    fn rank_again(&mut self, mut selection: Selection) {
+        let chosen = selection.candidates[selection.index].surface.clone();
+        let form = Form::ALL.into_iter().find(|form| {
+            word_form(&selection.word, *form, &self.config.romaji).as_ref() == Some(&chosen)
+        });
+        let typed = mem::take(&mut selection.typed);
+        self.completion = selection.completion.take().map(|completion| {
+            let mut completion = *completion;
+            // Ranked otherwise, each reading may convert to others first.
+            completion.previews.fill(None);
+            completion
+        });
+        self.convert(selection.into_reading());
+        let State::Candidates(selection) = &mut self.state else {
+            return;
+        };
+        selection.typed = typed;
+        match selection
+            .candidates
+            .iter()
+            .position(|c| c.surface == chosen)
+        {
+            Some(index) => selection.index = index,
+            None => {
+                if let Some(form) = form {
+                    self.choose_form(form);
+                }
+            }
+        }
     }
 
     /// Converts `grown`, the word of `selection` with kana added to its
@@ -1610,6 +1646,10 @@ impl<C: Converter> Core<C> {
                 self.state = State::Candidates(selection);
                 self.select(usize::from(place));
             }
+            Action::ToggleModel => {
+                self.converter.toggle_model();
+                self.rank_again(selection);
+            }
             // Romaji left over from the okurigana and still unfinished starts
             // the next reading.
             Action::Begin => {
@@ -2051,6 +2091,7 @@ impl<C: Converter> Core<C> {
                             .as_ref()
                             .map(|(candidates, _)| candidates.iter().skip(1).cloned().collect())
                             .unwrap_or_default(),
+                        ranked_by_model: None,
                     });
                 }
             }
@@ -2074,6 +2115,7 @@ impl<C: Converter> Core<C> {
                         page: start / PAGE_LEN,
                         pages: selection.candidates.len().div_ceil(PAGE_LEN),
                         more: Vec::new(),
+                        ranked_by_model: selection.ranked_by_model,
                     });
                 }
             }

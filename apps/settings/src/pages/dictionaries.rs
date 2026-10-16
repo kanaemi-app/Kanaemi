@@ -132,6 +132,36 @@ pub fn Dictionaries() -> Element {
         OtherDictionaries { folder: folder.clone(), custom: custom_path.clone() }
         HiddenWords { custom: custom_path }
         PickRecord { path: store_dir.join(SELECTIONS_FILE) }
+        RankingModel {}
+    }
+}
+
+#[component]
+fn RankingModel() -> Element {
+    let ctx = use_context::<Ctx>();
+    let enabled = ctx
+        .store
+        .read()
+        .state
+        .as_ref()
+        .ok()
+        .is_none_or(|l| l.settings.ranking_model);
+    rsx! {
+        Group {
+        Row {
+            label: "並べ替えのモデルを使う",
+            description: "候補を、並べ替えのモデル（ranking.model）で文脈に合わせて並べます。使わないと、確定した履歴と辞書の順で並べます。候補を選んでいるときに、割り当てたキーでも切り替えられます。",
+            path: path(&["ranking", "model"]),
+            shipped: (!enabled).then(|| "使う".to_owned()),
+            input {
+                class: "switch",
+                r#type: "checkbox",
+                role: "switch",
+                checked: enabled,
+                onchange: move |e| ctx.change(&["ranking", "model"], Some(e.checked().into())),
+            }
+        }
+        }
     }
 }
 

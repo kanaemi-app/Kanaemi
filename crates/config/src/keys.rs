@@ -85,9 +85,12 @@ impl Scene {
         match self {
             Self::Reading => !matches!(
                 action,
-                Forget | Pick(_) | UndoCommit | NextPage | PreviousPage | Paste
+                Forget | ToggleModel | Pick(_) | UndoCommit | NextPage | PreviousPage | Paste
             ),
-            Self::Completion => !matches!(action, Forget | UndoCommit | RereadKana | Paste),
+            Self::Completion => !matches!(
+                action,
+                Forget | ToggleModel | UndoCommit | RereadKana | Paste
+            ),
             Self::Candidates => !matches!(
                 action,
                 Delete | Left | Right | Home | End | UndoCommit | RereadKana | Paste
@@ -231,6 +234,7 @@ fn every_action() -> Vec<Action> {
         Action::PreviousPage,
         Action::Register,
         Action::Forget,
+        Action::ToggleModel,
         Action::Abc,
         Action::Kana,
         Action::Begin,
@@ -264,6 +268,7 @@ pub fn format_action(action: Action) -> String {
         Action::End => "end".to_owned(),
         Action::Register => "register".to_owned(),
         Action::Forget => "forget".to_owned(),
+        Action::ToggleModel => "toggle-model".to_owned(),
         Action::Abc => "abc".to_owned(),
         Action::Kana => "kana".to_owned(),
         Action::Begin => "begin".to_owned(),

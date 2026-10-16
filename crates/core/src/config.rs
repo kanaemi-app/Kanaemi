@@ -107,6 +107,9 @@ pub enum Action {
     Register,
     /// Stop offering the selected candidate.
     Forget,
+    /// Switch between ranking with the model and by rules alone, and rank
+    /// the candidates again.
+    ToggleModel,
     /// Commit what is being typed and go to ABC mode.
     Abc,
     /// Go to kana mode.
@@ -463,6 +466,8 @@ impl Default for Bindings {
                 &[
                     key(Key::Char('0'), plain, Register),
                     key(Key::Delete, shift, Forget),
+                    // Beside the Emacs keys bound here, R for ranking.
+                    key(Key::Char('r'), ctrl, ToggleModel),
                 ],
                 &to_abc,
                 &converting,

@@ -1,7 +1,7 @@
 //! Helpers the core's test files share. Each test file is a crate of its own and uses only some of them.
 #![allow(dead_code)]
 
-use std::cell::{Ref, RefCell};
+use std::cell::{Cell, Ref, RefCell};
 use std::collections::HashMap;
 use std::rc::Rc;
 
@@ -120,13 +120,16 @@ pub const SOURCE: &str = "テストの辞書";
 pub struct Fake {
     pub table: HashMap<&'static str, Vec<&'static str>>,
     pub learned: Rc<RefCell<Learned>>,
+    /// Switched by [`Converter::toggle_model`]: the table's order reversed
+    /// stands for ranking without the model.
+    pub without_model: Rc<Cell<bool>>,
 }
 
 impl Converter for Fake {
     fn convert(&self, reading: &str, okurigana: Option<&str>) -> Vec<Candidate> {
         let mut learned = self.learned.borrow_mut();
         learned.okurigana_seen.push(okurigana.map(str::to_owned));
-        self.table.get(reading).map_or_else(Vec::new, |surfaces| {
+        let mut candidates = self.table.get(reading).map_or_else(Vec::new, |surfaces| {
             surfaces
                 .iter()
                 .filter(|s| okurigana.is_none_or(|o| s.ends_with(o)))
@@ -136,8 +139,20 @@ impl Converter for Fake {
                     source: Some(SOURCE.to_owned()),
                     preview: None,
                 })
-                .collect()
-        })
+                .collect::<Vec<_>>()
+        });
+        if self.without_model.get() {
+            candidates.reverse();
+        }
+        candidates
+    }
+
+    fn toggle_model(&self) {
+        self.without_model.set(!self.without_model.get());
+    }
+
+    fn ranks_by_model(&self) -> Option<bool> {
+        Some(!self.without_model.get())
     }
 
     /// The readings of the table that go on from `reading`, shortest first.

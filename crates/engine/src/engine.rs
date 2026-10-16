@@ -118,6 +118,9 @@ pub struct Engine {
     user_name: Option<String>,
     field: FieldSession,
     model: Option<Arc<RankingModel>>,
+    /// Whether `model` ranks: off, the rules rank as without one. A cell,
+    /// as the core toggles it through the converter it holds.
+    model_enabled: Cell<bool>,
     selections: Selections,
     /// Whether `selections` changed since it was last handed over.
     selections_changed: bool,
@@ -168,6 +171,7 @@ impl Engine {
             user_name: None,
             field: FieldSession::default(),
             model: None,
+            model_enabled: Cell::new(true),
             selections: Selections::default(),
             selections_changed: false,
             functions: None,
@@ -183,6 +187,17 @@ impl Engine {
         self.model = model;
     }
 
+    /// Ranks with the model, when there is one, only while `enabled`; until
+    /// [`Converter::toggle_model`] switches it.
+    pub fn set_model_enabled(&mut self, enabled: bool) {
+        self.model_enabled.set(enabled);
+    }
+
+    /// The model to rank with now.
+    fn ranking_model(&self) -> Option<&RankingModel> {
+        self.model.as_deref().filter(|_| self.model_enabled.get())
+    }
+
     /// Fills placeholders with `functions` from now on, before the built-in
     /// ones. The engines of one process may share them.
     pub fn set_functions(&mut self, functions: Option<Rc<dyn Functions>>) {
@@ -190,8 +205,9 @@ impl Engine {
         self.last.replace(None);
     }
 
-    /// Runs `run` with only the built-in functions filling placeholders, and
-    /// keeps no conversion for recording, as for a key that is only tried.
+    /// Runs `run` with only the built-in functions filling placeholders,
+    /// keeping no conversion for recording and the ranking model as it is,
+    /// as for a key that is only tried.
     pub fn without_functions<T>(&self, run: impl FnOnce() -> T) -> T {
         let before = self.without_functions.replace(true);
         let result = run();
@@ -265,7 +281,7 @@ impl Engine {
         Explanation {
             context: input.context.to_owned(),
             history_len: input.history.len(),
-            ranked_by_model: self.model.is_some(),
+            ranked_by_model: self.ranking_model().is_some(),
             okuri_first_applied: trace.okuri_first_applied,
             favor_applied: trace.favor_applied,
             lookups: trace.lookups,
@@ -327,9 +343,10 @@ impl Engine {
     /// Carries what the field taught, the lines not yet written, and the
     /// last conversion and commit over from the engine this one replaces, so
     /// a candidate shown or committed before is still recorded, and its
-    /// commit undone, by the item it was filled from. The model and the
-    /// functions stay this engine's own.
+    /// commit undone, by the item it was filled from, and whether the model
+    /// ranks. The model and the functions stay this engine's own.
     pub fn take_over(&mut self, previous: Engine) {
+        self.model_enabled = previous.model_enabled;
         self.field = previous.field;
         self.user.absorb(previous.user);
         self.selections = previous.selections;
@@ -575,7 +592,7 @@ impl Engine {
             (f.facts.dictionary, f.facts.cost, f.facts.surface.as_bytes())
         }
         let tie = |a: &Found, b: &Found| key(a).cmp(&key(b));
-        if let Some(model) = &self.model {
+        if let Some(model) = self.ranking_model() {
             let input = self.field.input(reading);
             let mut scored: Vec<(f32, Found)> = all
                 .into_iter()
@@ -783,6 +800,20 @@ impl Converter for Engine {
             .take(limit)
             .map(|candidate| candidate.surface)
             .collect()
+    }
+
+    fn toggle_model(&self) {
+        // A key only tried runs on a copy of the core, but this engine is
+        // the one the key will run on: toggled here, the key would toggle
+        // twice and change nothing.
+        if self.without_functions.get() {
+            return;
+        }
+        self.model_enabled.set(!self.model_enabled.get());
+    }
+
+    fn ranks_by_model(&self) -> Option<bool> {
+        Some(self.ranking_model().is_some())
     }
 
     fn registered_text(&self, reading: &str, okurigana: Option<&str>, surface: &str) -> String {

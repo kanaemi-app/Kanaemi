@@ -51,4 +51,15 @@ pub trait Converter {
         let _ = reading;
         Vec::new()
     }
+
+    /// Switches whether the conversions from now on are ranked with a
+    /// model learned from data or by rules alone, for the user to compare
+    /// the two. Nothing by default.
+    fn toggle_model(&self) {}
+
+    /// Whether conversions are ranked with a model now; `None` for a
+    /// converter that ranks by nothing of the kind, as by default.
+    fn ranks_by_model(&self) -> Option<bool> {
+        None
+    }
 }
