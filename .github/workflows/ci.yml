@@ -70,29 +70,17 @@ jobs:
         env:
           CI: "1"
 
-  # The package flake.nix gives, built as its users build it. Builds on main
-  # are pushed to the binary cache the flake names, so those users fetch it
-  # instead of building; pull requests only read from it.
+  # The package flake.nix gives, built from the archive GitHub serves, which
+  # is the source an install of github:kanaemi-app/kanaemi fetches. Builds on
+  # main are pushed to the binary cache the flake names, so those installs
+  # fetch it instead of building; the token is handed over on main alone, so a
+  # pull request's build never reaches what users download.
   nix:
-    strategy:
-      fail-fast: false
-      matrix:
-        os: [ubuntu-latest, ubuntu-24.04-arm, macos-latest]
-    runs-on: ${{ matrix.os }}
-    steps:
-      - uses: actions/checkout@v7.0.1
-        with:
-          persist-credentials: false
-      - uses: cachix/install-nix-action@v31.11.1
-        with:
-          extra_nix_config: |
-            experimental-features = nix-command flakes
-      - uses: cachix/cachix-action@v17
-        with:
-          name: kanaemi
-          authToken: ${{ secrets.CACHIX_AUTH_TOKEN }}
-          skipPush: ${{ github.ref != 'refs/heads/main' }}
-      - run: nix build --print-build-logs .#kanaemi
+    uses: lambdalisue/nix-github-release/.github/workflows/build.yml@v0.1.0
+    with:
+      cachix-cache: kanaemi
+    secrets:
+      cachix-auth-token: ${{ github.ref == 'refs/heads/main' && secrets.CACHIX_AUTH_TOKEN || '' }}
 
   # MSVC for ARM64 miscompiled Luau only when optimizing, which neither the
   # debug tests above nor x64 build: this tests the Luau the release ships.
