@@ -16,6 +16,10 @@
       inputs.nixpkgs.follows = "nixpkgs";
     };
     crane.url = "github:ipetkov/crane";
+    nix-github-release = {
+      url = "github:lambdalisue/nix-github-release/v0.1.0";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -24,6 +28,7 @@
       nixpkgs,
       rust-overlay,
       crane,
+      nix-github-release,
       ...
     }:
     let
@@ -49,12 +54,14 @@
           inherit (pkgs.stdenv.hostPlatform) isDarwin;
           rust = pkgs.rust-bin.fromRustupToolchainFile ./rust-toolchain.toml;
           craneLib = (crane.mkLib pkgs).overrideToolchain (_: rust);
-          workspace = (builtins.fromTOML (builtins.readFile ./Cargo.toml)).workspace.package;
-          # The source carries no tags, so a build names the commit it is made from.
-          version = "${workspace.version}-${self.shortRev or self.dirtyShortRev or "unknown"}";
+          # The tag this flake was fetched at, from VERSION; see
+          # github:lambdalisue/nix-github-release.
+          version = nix-github-release.lib.version { inherit self; };
           build = {
             pname = "kanaemi";
-            inherit version;
+            # Cargo.toml's placeholder, so the dependency layer stays cached
+            # across releases; the package itself is built as the version.
+            version = "0.0.0";
             src = lib.fileset.toSource {
               root = ./.;
               fileset = lib.fileset.unions [
@@ -65,7 +72,6 @@
               ];
             };
             strictDeps = true;
-            KANAEMI_BUILD_VERSION = version;
             # The tests run in CI and with `just test`.
             doCheck = false;
           }
@@ -156,6 +162,9 @@
             build
             // install
             // {
+              inherit version;
+              # What crates/core/build.rs reports instead of `git describe`.
+              KANAEMI_BUILD_VERSION = version;
               cargoArtifacts = craneLib.buildDepsOnly build;
               # The install above takes what it needs from target/release.
               doNotPostBuildInstallCargoBinaries = true;

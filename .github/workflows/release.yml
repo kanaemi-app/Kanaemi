@@ -20,6 +20,19 @@ jobs:
     # when they are inherited; they cannot be passed by name.
     secrets: inherit
 
+  # The flake as github:kanaemi-app/kanaemi/vX.Y.Z fetches it: from the archive
+  # GitHub serves, whose VERSION holds the tag. Building that proves the
+  # package is the release, and pins the exact build such an install looks up
+  # in the cache, so the cache's retention never collects it.
+  nix:
+    uses: lambdalisue/nix-github-release/.github/workflows/build.yml@v0.1.0
+    with:
+      ref: ${{ github.event.release.tag_name }}
+      cachix-cache: kanaemi
+      cachix-pin: release
+    secrets:
+      cachix-auth-token: ${{ secrets.CACHIX_AUTH_TOKEN }}
+
   upload:
     needs: package
     runs-on: ubuntu-latest
