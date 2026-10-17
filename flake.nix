@@ -1,6 +1,14 @@
 {
   description = "Kanaemi, a cross-platform Japanese input method";
 
+  # Where CI pushes the packages it builds on main (.github/workflows/ci.yml).
+  nixConfig = {
+    extra-substituters = [ "https://kanaemi.cachix.org" ];
+    extra-trusted-public-keys = [
+      "kanaemi.cachix.org-1:TIkDbHQ6HmPzHQBXdOVhLSTff2LiCWJOJhKdIUWC238="
+    ];
+  };
+
   inputs = {
     nixpkgs.url = "https://channels.nixos.org/nixos-unstable/nixexprs.tar.xz";
     rust-overlay = {

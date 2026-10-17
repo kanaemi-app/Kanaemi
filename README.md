@@ -78,6 +78,8 @@ brew install --cask kanaemi-app/tap/kanaemi
 
 インストーラーで入れた Kanaemi がすでにあると、Homebrew は上書きせずに止まります。そのときは `--force` を付けてください。置き換わるのはアプリだけで、辞書と設定はそのまま残ります。
 
+[Nix](https://nixos.org/) の flake（`github:kanaemi-app/kanaemi`）からも入れられます。main のビルドを [kanaemi.cachix.org](https://kanaemi.cachix.org) に置いているので、手元でビルドせずに取ってこられます。NixOS と macOS での入れ方は [インストールのドキュメント](https://kanaemi-app.github.io/docs/install/) にあります。
+
 辞書は Kanaemi の本体とは別に、[kanaemi-dict](https://github.com/kanaemi-app/kanaemi-dict) が配っています。設定アプリの「辞書」の「公式の辞書」から、基本辞書と分野ごとの追加辞書を入れられます。
 
 ## 開発
