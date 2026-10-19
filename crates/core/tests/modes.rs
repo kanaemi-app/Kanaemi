@@ -519,6 +519,43 @@ fn a_modifier_key_held_across_a_focus_change_does_not_block_taps() {
 }
 
 #[test]
+fn a_modifier_key_let_go_unseen_does_not_block_taps() {
+    let mut t = T::new();
+    t.press(
+        Key::CmdLeft,
+        Modifiers {
+            cmd: true,
+            ..Default::default()
+        },
+    );
+    // Its release went to another window, and the focus never moved.
+    assert_eq!(t.tap(Key::ShiftRight).mode, Mode::Kana);
+}
+
+#[test]
+fn a_modifier_key_still_held_keeps_another_from_being_a_tap() {
+    let mut t = T::new();
+    t.press(
+        Key::CmdLeft,
+        Modifiers {
+            cmd: true,
+            ..Default::default()
+        },
+    );
+    t.press(
+        Key::ShiftRight,
+        Modifiers {
+            shift: true,
+            cmd: true,
+            ..Default::default()
+        },
+    );
+    t.release(Key::CmdLeft);
+    // The flag of the key pressed first is gone, but it was held with it.
+    assert_eq!(t.release(Key::ShiftRight).mode, Mode::Abc);
+}
+
+#[test]
 fn setting_the_mode_from_outside_switches_it_without_the_indicator() {
     let mut t = T::new();
     let out = t.handle(Event::SetMode(Mode::Kana));
