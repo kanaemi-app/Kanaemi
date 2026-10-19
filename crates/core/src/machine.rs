@@ -448,6 +448,11 @@ impl<C: Converter> Core<C> {
             KeyKind::Press | KeyKind::Repeat if tappable(event.key) => {
                 // A character still waiting was typed first.
                 self.settle_waiting();
+                // A key whose flag is not held with this one was let go
+                // unseen, as when its release went to another window. Its
+                // other side's flag tells nothing, and keeps it.
+                self.modifiers_held
+                    .retain(|k| *k == event.key || overlaps(flag(*k), event.mods));
                 // Another modifier key already down, even one whose flag is
                 // the same, makes neither of them a tap.
                 let first = self.modifiers_held.iter().all(|k| *k == event.key);
@@ -2241,6 +2246,10 @@ fn others(key: Key, mods: Modifiers) -> Modifiers {
 }
 
 /// The modifier a modifier key sets; none for another key.
+fn overlaps(a: Modifiers, b: Modifiers) -> bool {
+    (a.shift && b.shift) || (a.ctrl && b.ctrl) || (a.cmd && b.cmd) || (a.alt && b.alt)
+}
+
 fn flag(key: Key) -> Modifiers {
     Modifiers {
         shift: matches!(key, Key::ShiftLeft | Key::ShiftRight),
