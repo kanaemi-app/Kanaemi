@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Build the Fcitx5 add-on and the settings app, and package them as a Debian
 # and an RPM package into target/package. Needs nfpm and Fcitx5's
-# development files.
+# development files, patchelf and libxdo-dev.
 #
 # Fcitx5 loads the add-on into its own process, so it works with the Fcitx5
 # it was built against and later ones of the same library version: build on
@@ -23,6 +23,10 @@ for binary in "$addon" "$release/kanaemi-settings"; do
     exit 1
   fi
 done
+
+# As for the IBus package, libxdo is private to the settings app.
+settings="$out/settings"
+bash "$root/apps/settings/package/linux.sh" "$release/kanaemi-settings" "$settings"
 
 # Versions and architectures as apps/ibus/package.sh names them.
 version="$("$release/kanaemi-settings" --version)"
@@ -49,13 +53,13 @@ work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/debian"
 touch "$work/debian/control"
-deb_depends="$(cd "$work" && dpkg-shlibdeps -O "$addon" "$release/kanaemi-settings" |
-  perl -ne 'if (/^shlibs:Depends=(.*)$/) { print qq(      - "$_"\n) for split /,\s*/, $1 }')"
-rpm_depends="$(for binary in "$addon" "$release/kanaemi-settings"; do readelf -d "$binary"; done |
-  perl -ne 'print qq(      - "$1()(64bit)"\n) if /\(NEEDED\).*\[(.+)\]/' | sort -u)"
+deb_depends="$(cd "$work" && dpkg-shlibdeps -O "$addon" "$release/kanaemi-settings" "$settings"/lib/libxdo.so.* |
+  perl -ne 'if (/^shlibs:Depends=(.*)$/) { print qq(      - "$_"\n) for grep { !/^libxdo\d+(?:\s|$)/ } split /,\s*/, $1 }')"
+rpm_depends="$(for binary in "$addon" "$settings/kanaemi-settings" "$settings"/lib/libxdo.so.*; do readelf -d "$binary"; done |
+  perl -ne 'print qq(      - "$1()(64bit)"\n) if /\(NEEDED\).*\[(.+)\]/ && $1 !~ /^libxdo\.so\./' | sort -u)"
 
 config="$out/fcitx5-nfpm.yaml"
-ROOT="$root" RELEASE="$release" OUT="$out" LIB="$lib" VERSION="$package_version" ARCH="$arch" \
+ROOT="$root" RELEASE="$release" SETTINGS="$settings" OUT="$out" LIB="$lib" VERSION="$package_version" ARCH="$arch" \
   DEB_ADDONS="$deb_addons" RPM_ADDONS="$rpm_addons" DEB_DEPENDS="$deb_depends" RPM_DEPENDS="$rpm_depends" \
   perl -pe 's/\$\{(\w+)\}/$ENV{$1} \/\/ die "$1 is not set\n"/ge' "$root/apps/fcitx5/package/nfpm.yaml" >"$config"
 # Named as apps/ibus/package.sh names its files.

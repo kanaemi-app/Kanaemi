@@ -36,10 +36,20 @@ contents:
     file_info:
       mode: 0755
   # The engine opens the settings app from beside itself.
-  - src: ${RELEASE}/kanaemi-settings
+  - src: ${SETTINGS}/kanaemi-settings
     dst: /usr/lib/ibus-kanaemi/kanaemi-settings
     file_info:
       mode: 0755
+  - src: ${SETTINGS}/lib/libxdo.so.*
+    dst: /usr/lib/ibus-kanaemi/lib/
+    file_info:
+      mode: 0644
+  - src: ${SETTINGS}/libxdo-copyright
+    dst: /usr/share/doc/ibus-kanaemi/libxdo-copyright
+    packager: deb
+  - src: ${SETTINGS}/libxdo-copyright
+    dst: /usr/share/licenses/ibus-kanaemi/libxdo-copyright
+    packager: rpm
   - src: ${ROOT}/apps/macos/assets/logo/kanaemi-icon.svg
     dst: /usr/lib/ibus-kanaemi/kanaemi.svg
   - src: ${COMPONENT}
