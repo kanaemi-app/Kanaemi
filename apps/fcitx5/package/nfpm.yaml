@@ -35,10 +35,20 @@ contents:
     dst: ${RPM_ADDONS}/kanaemi.so
     type: symlink
     packager: rpm
-  - src: ${RELEASE}/kanaemi-settings
+  - src: ${SETTINGS}/kanaemi-settings
     dst: ${LIB}/kanaemi-settings
     file_info:
       mode: 0755
+  - src: ${SETTINGS}/lib/libxdo.so.*
+    dst: ${LIB}/lib/
+    file_info:
+      mode: 0644
+  - src: ${SETTINGS}/libxdo-copyright
+    dst: /usr/share/doc/fcitx5-kanaemi/libxdo-copyright
+    packager: deb
+  - src: ${SETTINGS}/libxdo-copyright
+    dst: /usr/share/licenses/fcitx5-kanaemi/libxdo-copyright
+    packager: rpm
   - src: ${ROOT}/apps/macos/assets/logo/kanaemi-icon.svg
     dst: ${LIB}/kanaemi.svg
   - src: ${OUT}/fcitx5-addon.conf

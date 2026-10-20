@@ -21,9 +21,10 @@ lint:
     cargo check -p kanaemi-core --target wasm32-unknown-unknown
     perl -ne 'if (/[^\x00-\x7F]/) { print "$ARGV:$.: not ASCII\n"; $bad = 1 } close ARGV if eof; END { exit $bad }' apps/windows/*.ps1
 
-# Run the Rust tests.
+# Run the Rust tests and the Linux packaging tests.
 test:
     cargo test --workspace
+    bash apps/settings/package/test-linux.sh
 
 # Run the Rust tests with `cases` generated inputs for each property test instead of proptest's default.
 test-thorough cases="20000":

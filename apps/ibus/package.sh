@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Build the IBus engine and the settings app, and package them as a Debian
-# and an RPM package into target/package. Needs nfpm.
+# and an RPM package into target/package. Needs nfpm, patchelf and libxdo-dev.
 set -euo pipefail
 
 root="$(cd "$(dirname "$0")/../.." && pwd)"
@@ -19,6 +19,10 @@ for binary in "$release/kanaemi-ibus" "$release/kanaemi-settings"; do
     exit 1
   fi
 done
+
+# Distributions do not agree on libxdo's SONAME. Load our own copy instead.
+settings="$out/settings"
+bash "$root/apps/settings/package/linux.sh" "$release/kanaemi-settings" "$settings"
 
 # The version kanaemi_core::VERSION reports, as the settings app prints it.
 version="$("$release/kanaemi-settings" --version)"
@@ -39,20 +43,22 @@ perl -pe "s|\@LIBDIR\@|/usr/lib/ibus-kanaemi|g; s|\@VERSION\@|$version|g" "$root
 
 # Debian depends on the packages that hold the libraries the binaries link
 # to, as this system names them; dpkg-shlibdeps works in a debian folder.
+# Inspect the original app so libxdo is found in the package database, then
+# exclude that bundled library. Its own dependencies still belong here.
 work="$(mktemp -d)"
 trap 'rm -rf "$work"' EXIT
 mkdir -p "$work/debian"
 touch "$work/debian/control"
-deb_depends="$(cd "$work" && dpkg-shlibdeps -O "$release/kanaemi-ibus" "$release/kanaemi-settings" |
-  perl -ne 'if (/^shlibs:Depends=(.*)$/) { print qq(      - "$_"\n) for split /,\s*/, $1 }')"
+deb_depends="$(cd "$work" && dpkg-shlibdeps -O "$release/kanaemi-ibus" "$release/kanaemi-settings" "$settings"/lib/libxdo.so.* |
+  perl -ne 'if (/^shlibs:Depends=(.*)$/) { print qq(      - "$_"\n) for grep { !/^libxdo\d+(?:\s|$)/ } split /,\s*/, $1 }')"
 # RPM depends on the libraries themselves, whatever package holds them, so
 # one package fits distributions that name their packages differently.
-rpm_depends="$(for binary in "$release/kanaemi-ibus" "$release/kanaemi-settings"; do readelf -d "$binary"; done |
-  perl -ne 'print qq(      - "$1()(64bit)"\n) if /\(NEEDED\).*\[(.+)\]/' | sort -u)"
+rpm_depends="$(for binary in "$release/kanaemi-ibus" "$settings/kanaemi-settings" "$settings"/lib/libxdo.so.*; do readelf -d "$binary"; done |
+  perl -ne 'print qq(      - "$1()(64bit)"\n) if /\(NEEDED\).*\[(.+)\]/ && $1 !~ /^libxdo\.so\./' | sort -u)"
 
 # nfpm expands variables in only some of its fields, so they are filled in here.
 config="$out/nfpm.yaml"
-ROOT="$root" RELEASE="$release" COMPONENT="$component" VERSION="$package_version" ARCH="$arch" \
+ROOT="$root" RELEASE="$release" SETTINGS="$settings" COMPONENT="$component" VERSION="$package_version" ARCH="$arch" \
   DEB_DEPENDS="$deb_depends" RPM_DEPENDS="$rpm_depends" \
   perl -pe 's/\$\{(\w+)\}/$ENV{$1} \/\/ die "$1 is not set\n"/ge' "$root/apps/ibus/package/nfpm.yaml" >"$config"
 # The files are named after the version as it is, not the package version:
