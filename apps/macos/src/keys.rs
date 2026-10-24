@@ -42,7 +42,6 @@ pub enum RawKind {
     KeyDown,
     KeyUp,
     FlagsChanged,
-    Other,
 }
 
 /// What the IME reads from an `NSEvent`.
@@ -68,7 +67,6 @@ impl fmt::Display for RawEvent<'_> {
             RawKind::KeyDown => "key-down",
             RawKind::KeyUp => "key-up",
             RawKind::FlagsChanged => "flags-changed",
-            RawKind::Other => "other",
         };
         f.write_str(kind)?;
         let text = self.characters_ignoring_modifiers.unwrap_or_default();
@@ -226,7 +224,7 @@ impl Keys {
             RawKind::FlagsChanged => {
                 modifier_flag(raw.key_code).is_some_and(|flag| raw.flags & flag != 0)
             }
-            RawKind::KeyUp | RawKind::Other => false,
+            RawKind::KeyUp => false,
         };
         if pressed && raw.user_data != POSTED_MARK {
             self.pressing_ms = self.pressing_ms.max(raw.time_ms);
@@ -479,7 +477,6 @@ impl Keys {
                     time_ms: raw.time_ms,
                 })
             }
-            RawKind::Other => None,
         }
     }
 
