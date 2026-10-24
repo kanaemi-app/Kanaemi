@@ -4,6 +4,7 @@
 //! highlighted reading, its other candidates in a pane beside the list.
 
 use kanaemi_core::CandidateView;
+use kanaemi_runtime::ranking_label;
 
 /// Space around the rows and between the columns, in pixels.
 pub const PADDING: i32 = 6;
@@ -49,9 +50,9 @@ impl Page {
 
 fn footer(view: &CandidateView) -> Option<String> {
     let page = (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages));
-    match (view.ranking_label(), page) {
+    match (ranking_label(view), page) {
         (Some(label), Some(page)) => Some(format!("{label}  {page}")),
-        (label, page) => label.map(str::to_owned).or(page),
+        (label, page) => label.or(page),
     }
 }
 
@@ -164,6 +165,7 @@ mod tests {
             pages: 3,
             more: vec!["感じ".to_owned()],
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(
             Page::new(&view),
@@ -253,6 +255,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(Page::new(&view).footer, None);
     }
@@ -266,6 +269,7 @@ mod tests {
             pages,
             more: Vec::new(),
             ranked_by_model,
+            toggle_model: None,
         };
         assert_eq!(
             Page::new(&view(3, Some(true))).footer.as_deref(),

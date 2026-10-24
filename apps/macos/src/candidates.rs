@@ -6,6 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 
 use kanaemi_core::CandidateView;
+use kanaemi_runtime::ranking_label;
 
 /// The most of a meaning shown, in characters.
 const MEANING_CHARS: usize = 240;
@@ -110,9 +111,9 @@ pub fn excerpt(meaning: &str) -> String {
 /// and how many there are; no page for a list that fits one.
 pub fn footer(view: &CandidateView) -> Option<String> {
     let page = (view.pages > 1).then(|| format!("‹ {} / {} ›", view.page + 1, view.pages));
-    match (view.ranking_label(), page) {
+    match (ranking_label(view), page) {
         (Some(label), Some(page)) => Some(format!("{label}  {page}")),
-        (label, page) => label.map(str::to_owned).or(page),
+        (label, page) => label.or(page),
     }
 }
 
@@ -377,6 +378,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(
             rows(&view),
@@ -413,6 +415,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         let shown = rows(&view);
         assert_eq!(shown[0].beside(), Some("漢字"));
@@ -434,6 +437,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(rows(&view)[0].beside(), Some("ユーザー辞書"));
     }
@@ -450,6 +454,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(meaning_wanted(&view(0)), Some("漢字"));
         assert_eq!(
@@ -473,6 +478,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(to_look_up(&view), strings(&["感じ", "漢字", "幹事"]));
     }
@@ -502,6 +508,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         let shown = rows(&view);
         assert_eq!(spoken(&shown[0]), "漢字、ユーザー辞書");
@@ -716,6 +723,7 @@ mod tests {
             pages,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(footer(&view(1, 5)).as_deref(), Some("‹ 2 / 5 ›"));
         assert_eq!(footer(&view(0, 1)), None);
@@ -730,6 +738,7 @@ mod tests {
             pages,
             more: Vec::new(),
             ranked_by_model,
+            toggle_model: None,
         };
         assert_eq!(
             footer(&view(5, Some(true))).as_deref(),

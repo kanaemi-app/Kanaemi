@@ -1,7 +1,7 @@
 mod common;
 
 use common::*;
-use kanaemi_core::{Action, Binding, Event, Form, Gesture, Key, Mode, Modifiers, Output};
+use kanaemi_core::{Action, Binding, Chord, Event, Form, Gesture, Key, Mode, Modifiers, Output};
 
 #[test]
 fn no_matching_candidate_shows_katakana_then_registration() {
@@ -924,14 +924,42 @@ fn the_list_tells_whether_the_model_ranked_it() {
 }
 
 #[test]
-fn the_list_is_labelled_by_how_it_was_ranked_when_the_converter_tells() {
+fn the_list_tells_the_first_key_bound_to_toggle_the_model() {
     let mut t = toggling_the_model();
     t.kana();
     t.typ(";kanji");
-    let label = |out: Output| out.candidates.unwrap().ranking_label();
-    assert_eq!(label(t.key(Key::Space)), Some("モデルあり"));
-    assert_eq!(label(t.key(Key::F(12))), Some("モデルなし"));
-    let mut view = t.key(Key::Space).candidates.unwrap();
-    view.ranked_by_model = None;
-    assert_eq!(view.ranking_label(), None);
+    let ctrl_r = Chord {
+        key: Key::Char('r'),
+        mods: Modifiers {
+            ctrl: true,
+            ..Modifiers::default()
+        },
+    };
+    assert_eq!(
+        t.key(Key::Space).candidates.unwrap().toggle_model,
+        Some(ctrl_r)
+    );
+}
+
+#[test]
+fn with_no_key_bound_to_toggle_the_model_the_list_tells_none() {
+    let mut config = config();
+    config
+        .bindings
+        .candidates
+        .retain(|b| b.to != Action::ToggleModel);
+    let mut t = T::with_config(config);
+    t.kana();
+    t.typ(";kanji");
+    assert_eq!(t.key(Key::Space).candidates.unwrap().toggle_model, None);
+}
+
+#[test]
+fn the_readings_completed_with_tell_no_key_to_toggle_the_model() {
+    let mut t = T::new();
+    t.kana();
+    t.typ(";ka");
+    let view = t.key(Key::Tab).candidates.unwrap();
+    assert_eq!(view.ranked_by_model, None);
+    assert_eq!(view.toggle_model, None);
 }

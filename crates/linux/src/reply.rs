@@ -2,6 +2,7 @@
 //! from the framework so it builds and tests on every platform.
 
 use kanaemi_core::{Candidate, CandidateView, Mode, Output};
+use kanaemi_runtime::ranking_label;
 
 use crate::keys;
 
@@ -118,7 +119,7 @@ fn aside(view: &CandidateView) -> Option<String> {
     } else {
         Some(view.more.join(&SEPARATOR.to_string()))
     };
-    let parts: Vec<String> = [page, view.ranking_label().map(str::to_owned), about]
+    let parts: Vec<String> = [page, ranking_label(view), about]
         .into_iter()
         .flatten()
         .collect();
@@ -223,6 +224,7 @@ mod tests {
                 pages: 1,
                 more: Vec::new(),
                 ranked_by_model: None,
+                toggle_model: None,
             }),
             Signal::Candidates(vec![item("漢字", None), item("感じ", None)], 1, None)
         );
@@ -244,6 +246,7 @@ mod tests {
                 pages: 1,
                 more: Vec::new(),
                 ranked_by_model: None,
+                toggle_model: None,
             }),
             Signal::Candidates(
                 vec![item("漢字　ユーザー辞書", Some(2)), item("カンジ", None)],
@@ -269,6 +272,7 @@ mod tests {
                 pages: 1,
                 more: vec!["感じ".to_owned(), "幹事".to_owned()],
                 ranked_by_model: None,
+                toggle_model: None,
             }),
             Signal::Candidates(
                 vec![item("かんじ　漢字", Some(3)), item("かお", None)],
@@ -290,6 +294,7 @@ mod tests {
             pages: 2,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(
             shown(view(Some("ユーザー辞書"))),
@@ -317,6 +322,7 @@ mod tests {
             pages,
             more: Vec::new(),
             ranked_by_model: Some(false),
+            toggle_model: None,
         };
         assert_eq!(
             shown(view(2)),
@@ -385,6 +391,7 @@ mod tests {
                 pages: 1,
                 more: Vec::new(),
                 ranked_by_model: None,
+                toggle_model: None,
             }),
             ..output()
         };

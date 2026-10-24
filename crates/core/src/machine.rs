@@ -2097,6 +2097,7 @@ impl<C: Converter> Core<C> {
                             .map(|(candidates, _)| candidates.iter().skip(1).cloned().collect())
                             .unwrap_or_default(),
                         ranked_by_model: None,
+                        toggle_model: None,
                     });
                 }
             }
@@ -2121,6 +2122,7 @@ impl<C: Converter> Core<C> {
                         pages: selection.candidates.len().div_ceil(PAGE_LEN),
                         more: Vec::new(),
                         ranked_by_model: selection.ranked_by_model,
+                        toggle_model: self.first_bound(Scene::Candidates, Action::ToggleModel),
                     });
                 }
             }
@@ -2167,20 +2169,23 @@ impl<C: Converter> Core<C> {
         let scene = self.scene();
         let key = |action| {
             matches!(scene, Scene::Registration(_))
-                .then(|| {
-                    self.config
-                        .bindings
-                        .get(scene)
-                        .iter()
-                        .find(|b| b.to == action && b.gesture == Gesture::Press)
-                        .map(|b| b.from)
-                })
+                .then(|| self.first_bound(scene, action))
                 .flatten()
         };
         Some(Registering {
             cancel: key(Action::Cancel),
             paste: key(Action::Paste),
         })
+    }
+
+    /// The first key pressed to do `action` in `scene`.
+    fn first_bound(&self, scene: Scene, action: Action) -> Option<Chord> {
+        self.config
+            .bindings
+            .get(scene)
+            .iter()
+            .find(|b| b.to == action && b.gesture == Gesture::Press)
+            .map(|b| b.from)
     }
 
     fn push_word(&self, preedit: &mut String, word: &Word) {
