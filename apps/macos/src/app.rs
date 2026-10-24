@@ -290,12 +290,14 @@ define_class!(
             delegate: Option<&AnyObject>,
             client: Option<&AnyObject>,
         ) -> Option<Retained<Self>> {
-            let this = this.set_ivars(Ivars {
-                field: RefCell::new(new_field()),
-                marked: Cell::new(false),
-                shown: RefCell::new(String::new()),
-            });
-            unsafe { msg_send![super(this), initWithServer: server, delegate: delegate, client: client] }
+            guarded(None, || {
+                let this = this.set_ivars(Ivars {
+                    field: RefCell::new(new_field()),
+                    marked: Cell::new(false),
+                    shown: RefCell::new(String::new()),
+                });
+                unsafe { msg_send![super(this), initWithServer: server, delegate: delegate, client: client] }
+            })
         }
 
         /// The input source menu in the menu bar; its items' actions are
@@ -303,74 +305,76 @@ define_class!(
         #[unsafe(method_id(menu))]
         fn menu(&self) -> Retained<NSMenu> {
             let mtm = MainThreadMarker::new().expect("Input Method Kit calls on the main thread");
-            let menu = NSMenu::new(mtm);
-            if let Some(holder) = secure_input::check() {
-                let warning = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &NSString::from_str(&holder.label()),
-                        None,
-                        &NSString::from_str(""),
-                    )
-                };
-                warning.setEnabled(false);
-                menu.addItem(&warning);
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-            }
-            if with_profile(|profile| input_monitoring::missing(profile.config())) {
-                let warning = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &NSString::from_str(input_monitoring::WARNING),
-                        None,
-                        &NSString::from_str(""),
-                    )
-                };
-                warning.setEnabled(false);
-                menu.addItem(&warning);
+            guarded(NSMenu::new(mtm), || {
+                let menu = NSMenu::new(mtm);
+                if let Some(holder) = secure_input::check() {
+                    let warning = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str(&holder.label()),
+                            None,
+                            &NSString::from_str(""),
+                        )
+                    };
+                    warning.setEnabled(false);
+                    menu.addItem(&warning);
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                }
+                if with_profile(|profile| input_monitoring::missing(profile.config())) {
+                    let warning = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str(input_monitoring::WARNING),
+                            None,
+                            &NSString::from_str(""),
+                        )
+                    };
+                    warning.setEnabled(false);
+                    menu.addItem(&warning);
+                    let item = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str("入力監視の設定を開く…"),
+                            Some(sel!(openInputMonitoring:)),
+                            &NSString::from_str(""),
+                        )
+                    };
+                    menu.addItem(&item);
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                }
+                if with_profile(|profile| accessibility::missing(profile.config())) {
+                    let warning = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str(accessibility::WARNING),
+                            None,
+                            &NSString::from_str(""),
+                        )
+                    };
+                    warning.setEnabled(false);
+                    menu.addItem(&warning);
+                    let item = unsafe {
+                        NSMenuItem::initWithTitle_action_keyEquivalent(
+                            NSMenuItem::alloc(mtm),
+                            &NSString::from_str("アクセシビリティの設定を開く…"),
+                            Some(sel!(openAccessibility:)),
+                            &NSString::from_str(""),
+                        )
+                    };
+                    menu.addItem(&item);
+                    menu.addItem(&NSMenuItem::separatorItem(mtm));
+                }
                 let item = unsafe {
                     NSMenuItem::initWithTitle_action_keyEquivalent(
                         NSMenuItem::alloc(mtm),
-                        &NSString::from_str("入力監視の設定を開く…"),
-                        Some(sel!(openInputMonitoring:)),
+                        &NSString::from_str("設定を開く…"),
+                        Some(sel!(openSettings:)),
                         &NSString::from_str(""),
                     )
                 };
                 menu.addItem(&item);
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-            }
-            if with_profile(|profile| accessibility::missing(profile.config())) {
-                let warning = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &NSString::from_str(accessibility::WARNING),
-                        None,
-                        &NSString::from_str(""),
-                    )
-                };
-                warning.setEnabled(false);
-                menu.addItem(&warning);
-                let item = unsafe {
-                    NSMenuItem::initWithTitle_action_keyEquivalent(
-                        NSMenuItem::alloc(mtm),
-                        &NSString::from_str("アクセシビリティの設定を開く…"),
-                        Some(sel!(openAccessibility:)),
-                        &NSString::from_str(""),
-                    )
-                };
-                menu.addItem(&item);
-                menu.addItem(&NSMenuItem::separatorItem(mtm));
-            }
-            let item = unsafe {
-                NSMenuItem::initWithTitle_action_keyEquivalent(
-                    NSMenuItem::alloc(mtm),
-                    &NSString::from_str("設定を開く…"),
-                    Some(sel!(openSettings:)),
-                    &NSString::from_str(""),
-                )
-            };
-            menu.addItem(&item);
-            menu
+                menu
+            })
         }
 
         #[unsafe(method(openSettings:))]
@@ -453,15 +457,12 @@ define_class!(
 impl KanaemiController {
     fn handle_event_inner(&self, event: Option<&NSEvent>, sender: Option<&AnyObject>) -> Bool {
         let Some(event) = event else { return Bool::NO };
-        let kind = match event.r#type() {
-            NSEventType::KeyDown => RawKind::KeyDown,
-            NSEventType::KeyUp => RawKind::KeyUp,
-            NSEventType::FlagsChanged => RawKind::FlagsChanged,
-            NSEventType::LeftMouseDown => {
-                self.dispatch(Event::Flush, sender);
-                return Bool::NO;
-            }
-            _ => RawKind::Other,
+        if event.r#type() == NSEventType::LeftMouseDown {
+            self.dispatch(Event::Flush, sender);
+            return Bool::NO;
+        }
+        let Some(kind) = key_kind(event.r#type()) else {
+            return Bool::NO;
         };
         let typed = matches!(kind, RawKind::KeyDown | RawKind::KeyUp);
         let characters = typed
@@ -713,6 +714,18 @@ impl KanaemiController {
     }
 }
 
+/// What kind of key event `event_type` is, if it is one. AppKit raises when
+/// a key's code is asked of any other event, and Input Method Kit hands
+/// over events it was not asked for.
+fn key_kind(event_type: NSEventType) -> Option<RawKind> {
+    match event_type {
+        NSEventType::KeyDown => Some(RawKind::KeyDown),
+        NSEventType::KeyUp => Some(RawKind::KeyUp),
+        NSEventType::FlagsChanged => Some(RawKind::FlagsChanged),
+        _ => None,
+    }
+}
+
 /// The preedit carries its state as marks in the text, so it is drawn without
 /// the underline clients add to marked text by default.
 fn set_marked_text(client: &AnyObject, text: &str, cursor_utf16: usize) {
@@ -944,4 +957,40 @@ pub fn run() {
     );
     NSApplication::sharedApplication(mtm).run();
     drop(server);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use objc2_foundation::NSArray;
+
+    #[test]
+    fn an_exception_in_a_callback_falls_back_instead_of_ending_the_ime() {
+        let raised = guarded(false, || {
+            let empty = NSArray::<NSObject>::new();
+            empty.objectAtIndex(1);
+            true
+        });
+        assert!(!raised);
+    }
+
+    #[test]
+    fn only_key_events_are_read_as_keys() {
+        assert_eq!(key_kind(NSEventType::KeyDown), Some(RawKind::KeyDown));
+        assert_eq!(key_kind(NSEventType::KeyUp), Some(RawKind::KeyUp));
+        assert_eq!(
+            key_kind(NSEventType::FlagsChanged),
+            Some(RawKind::FlagsChanged)
+        );
+        for other in [
+            NSEventType::LeftMouseDown,
+            NSEventType::LeftMouseUp,
+            NSEventType::LeftMouseDragged,
+            NSEventType::RightMouseDown,
+            NSEventType::ScrollWheel,
+            NSEventType::AppKitDefined,
+        ] {
+            assert_eq!(key_kind(other), None, "{other:?}");
+        }
+    }
 }

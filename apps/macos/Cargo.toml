@@ -18,7 +18,7 @@ kanaemi-runtime.workspace = true
 block2 = "0.6"
 dispatch2 = "0.3"
 kanaemi-config.workspace = true
-objc2 = "0.6"
+objc2 = { version = "0.6", features = ["catch-all"] }
 objc2-foundation = { version = "0.3", features = ["NSString", "NSArray", "NSRange", "NSAttributedString", "NSDictionary", "NSValue", "NSGeometry", "NSBundle", "NSProcessInfo"] }
 objc2-app-kit = { version = "0.3", features = ["NSApplication", "NSEvent", "NSResponder", "NSPanel", "NSWindow", "NSView", "NSTextField", "NSControl", "NSColor", "NSFont", "NSText", "NSGraphics", "NSAttributedString", "NSBox", "NSImage", "NSImageView", "NSMenu", "NSMenuItem", "NSPasteboard", "NSRunningApplication", "objc2-core-graphics", "block2"] }
 objc2-core-foundation = { version = "0.3", default-features = false, features = ["std", "CFMachPort", "CFRunLoop"] }
