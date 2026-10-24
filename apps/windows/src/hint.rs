@@ -67,6 +67,7 @@ mod tests {
             pages: 1,
             more: Vec::new(),
             ranked_by_model: None,
+            toggle_model: None,
         };
         assert_eq!(wanted(&output(Some(REGISTERING), Some(candidates))), None);
     }

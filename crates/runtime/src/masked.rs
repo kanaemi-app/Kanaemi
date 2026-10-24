@@ -451,6 +451,7 @@ mod tests {
                 pages: 3,
                 more: vec!["X".to_owned()],
                 ranked_by_model: Some(false),
+                toggle_model: None,
             }),
             ..output()
         })

@@ -23,19 +23,10 @@ pub struct CandidateView {
     /// they were converted, for the host to show. `None` for readings to
     /// complete with.
     pub ranked_by_model: Option<bool>,
-}
-
-impl CandidateView {
-    /// What the host shows with the list to tell how it was ranked.
-    pub fn ranking_label(&self) -> Option<&'static str> {
-        self.ranked_by_model.map(|model| {
-            if model {
-                "モデルあり"
-            } else {
-                "モデルなし"
-            }
-        })
-    }
+    /// For candidates, the first key bound to toggle the model, for the host
+    /// to show with how they were ranked. `None` for readings to complete
+    /// with.
+    pub toggle_model: Option<Chord>,
 }
 
 /// A word being registered, a reading inside it included. The keys are the
