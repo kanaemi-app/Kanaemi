@@ -9,6 +9,12 @@ updates:
     commit-message:
       prefix: deps
     groups:
+      # windows re-exports the traits of the windows-core it depends on, so
+      # bumping either alone leaves two incompatible versions in the build.
+      windows:
+        patterns:
+          - windows
+          - windows-core
       cargo:
         applies-to: version-updates
         update-types:
