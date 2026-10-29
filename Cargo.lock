@@ -2859,7 +2859,7 @@ dependencies = [
 name = "kanaemi-settings"
 version = "0.0.0"
 dependencies = [
- "base64 0.22.1",
+ "base64 0.23.1",
  "dioxus",
  "embed-resource",
  "futures-channel",
