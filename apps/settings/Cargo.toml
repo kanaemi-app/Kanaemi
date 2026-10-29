@@ -20,7 +20,7 @@ tree-sitter-highlight = "0.27.0"
 tree-sitter-luau = "1.2.0"
 unicode-normalization = "0.1"
 ureq = "3.4.2"
-zip = { version = "8.6.0", default-features = false, features = ["deflate-flate2"] }
+zip = { version = "9.1.3", default-features = false, features = ["deflate-flate2"] }
 
 # Applications are listed and drawn by AppKit to pick them by their icons.
 [target.'cfg(target_os = "macos")'.dependencies]
