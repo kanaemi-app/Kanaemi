@@ -10,10 +10,8 @@ use std::cell::RefCell;
 use crate::listing::{self, Layout, PADDING, Page, Widths};
 use crate::popup::{self, Popup};
 
-use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::*;
+use crate::bindings::*;
+use windows_core::*;
 
 const CLASS: PCWSTR = w!("KanaemiCandidates");
 
@@ -53,7 +51,7 @@ pub fn show(page: Page, at: RECT, owner: Option<HWND>) {
             top,
             width,
             height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            (SWP_NOACTIVATE | SWP_SHOWWINDOW) as u32,
         );
         let _ = InvalidateRect(Some(window), None, true);
     }
@@ -73,17 +71,17 @@ fn create(owner: Option<HWND>) -> Result<HWND> {
         lpfnWndProc: Some(procedure),
         hInstance: instance,
         lpszClassName: CLASS,
-        hCursor: unsafe { LoadCursorW(None, IDC_ARROW)? },
+        hCursor: unsafe { LoadCursorW(None, IDC_ARROW) },
         ..Default::default()
     };
     // A second registration in the same process fails harmlessly.
     unsafe { RegisterClassW(&class) };
-    unsafe {
+    let window = unsafe {
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE,
+            (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE) as u32,
             CLASS,
             PCWSTR::null(),
-            WS_POPUP | WS_BORDER,
+            WS_POPUP | WS_BORDER as u32,
             0,
             0,
             0,
@@ -93,7 +91,11 @@ fn create(owner: Option<HWND>) -> Result<HWND> {
             Some(instance),
             None,
         )
+    };
+    if window.0.is_null() {
+        return Err(Error::from_thread());
     }
+    Ok(window)
 }
 
 /// The system's message font, which covers Japanese.
@@ -104,13 +106,14 @@ fn message_font() -> Option<LOGFONTW> {
     };
     unsafe {
         SystemParametersInfoW(
-            SPI_GETNONCLIENTMETRICS,
+            SPI_GETNONCLIENTMETRICS as u32,
             metrics.cbSize,
-            Some((&mut metrics as *mut NONCLIENTMETRICSW).cast()),
-            SYSTEM_PARAMETERS_INFO_UPDATE_FLAGS(0),
+            (&mut metrics as *mut NONCLIENTMETRICSW).cast(),
+            0,
         )
     }
-    .ok()?;
+    .as_bool()
+    .then_some(())?;
     Some(metrics.lfMessageFont)
 }
 
@@ -141,7 +144,7 @@ fn extent(dc: HDC, font: HFONT, text: &str) -> SIZE {
     let wide: Vec<u16> = text.encode_utf16().collect();
     let mut size = SIZE::default();
     unsafe {
-        let previous = SelectObject(dc, font.into());
+        let previous = SelectObject(dc, HGDIOBJ(font.0));
         let _ = GetTextExtentPoint32W(dc, &wide, &mut size);
         SelectObject(dc, previous);
     }
@@ -192,7 +195,7 @@ fn measure(window: HWND) -> Layout {
 /// Draws `text` within `width` from `(x, top)`, its end cut with an ellipsis
 /// when it is wider.
 fn text_out(dc: HDC, text: &str, x: i32, top: i32, width: i32, height: i32) {
-    let mut wide: Vec<u16> = text.encode_utf16().collect();
+    let wide: Vec<u16> = text.encode_utf16().collect();
     let mut area = RECT {
         left: x,
         top,
@@ -202,9 +205,10 @@ fn text_out(dc: HDC, text: &str, x: i32, top: i32, width: i32, height: i32) {
     unsafe {
         DrawTextW(
             dc,
-            &mut wide,
+            PCWSTR(wide.as_ptr()),
+            wide.len() as i32,
             &mut area,
-            DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX,
+            (DT_SINGLELINE | DT_VCENTER | DT_END_ELLIPSIS | DT_NOPREFIX) as u32,
         );
     }
 }
@@ -231,7 +235,7 @@ fn paint(window: HWND) {
             unsafe {
                 FillRect(dc, &pane, GetSysColorBrush(COLOR_BTNFACE));
                 SetTextColor(dc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
-                SelectObject(dc, font().into());
+                SelectObject(dc, HGDIOBJ(font().0));
             }
             for (i, other) in page.more.iter().enumerate() {
                 let top = PADDING / 2 + line * i as i32;
@@ -255,7 +259,7 @@ fn paint(window: HWND) {
             unsafe {
                 FillRect(dc, &row, GetSysColorBrush(background));
                 SetTextColor(dc, COLORREF(GetSysColor(foreground)));
-                SelectObject(dc, font().into());
+                SelectObject(dc, HGDIOBJ(font().0));
             }
             let number = (i + 1).to_string();
             text_out(
@@ -270,7 +274,7 @@ fn paint(window: HWND) {
             if let Some(beside) = beside {
                 unsafe {
                     SetTextColor(dc, COLORREF(GetSysColor(muted)));
-                    SelectObject(dc, small_font().into());
+                    SelectObject(dc, HGDIOBJ(small_font().0));
                 }
                 text_out(dc, beside, laid.beside_x, top, laid.beside_width, line);
             }
@@ -278,13 +282,13 @@ fn paint(window: HWND) {
         if let (Some((x, top)), Some(footer)) = (laid.footer, &page.footer) {
             unsafe {
                 SetTextColor(dc, COLORREF(GetSysColor(COLOR_GRAYTEXT)));
-                SelectObject(dc, small_font().into());
+                SelectObject(dc, HGDIOBJ(small_font().0));
             }
             text_out(dc, footer, x, top, laid.list_width - x, line);
         }
     });
     unsafe {
-        SelectObject(dc, font().into());
+        SelectObject(dc, HGDIOBJ(font().0));
         let _ = EndPaint(window, &ps);
     }
 }
@@ -295,7 +299,7 @@ extern "system" fn procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match message {
+    match message as i32 {
         WM_PAINT => {
             // A panic must not unwind into the application's message loop.
             let _ = std::panic::catch_unwind(|| paint(window));

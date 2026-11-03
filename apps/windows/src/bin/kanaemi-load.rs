@@ -16,9 +16,8 @@ fn main() {
 fn main() {
     use std::ffi::CString;
 
-    use windows::Win32::Foundation::HMODULE;
-    use windows::Win32::System::LibraryLoader::*;
-    use windows::core::{HSTRING, PCSTR, PCWSTR};
+    use kanaemi::bindings::*;
+    use windows_core::{Error, HSTRING, PCSTR, PCWSTR, PWSTR};
 
     let mut args = std::env::args().skip(1);
     let Some(dll) = args.next() else {
@@ -30,10 +29,12 @@ fn main() {
         LoadLibraryExW(
             &HSTRING::from(dll.as_str()),
             None,
-            LOAD_WITH_ALTERED_SEARCH_PATH,
+            LOAD_WITH_ALTERED_SEARCH_PATH as u32,
         )
+    };
+    if module.0.is_null() {
+        fail(&format!("{dll}: {}", Error::from_thread()));
     }
-    .unwrap_or_else(|error| fail(&format!("{dll}: {error}")));
     for name in args {
         let symbol = CString::new(name.as_str()).unwrap_or_else(|_| fail(&name));
         let Some(export) = (unsafe { GetProcAddress(module, PCSTR(symbol.as_ptr().cast())) })
@@ -43,15 +44,17 @@ fn main() {
         let mut owner = HMODULE::default();
         unsafe {
             GetModuleHandleExW(
-                GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
-                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT,
+                (GET_MODULE_HANDLE_EX_FLAG_FROM_ADDRESS
+                    | GET_MODULE_HANDLE_EX_FLAG_UNCHANGED_REFCOUNT) as u32,
                 PCWSTR(export as *const u16),
                 &mut owner,
             )
         }
+        .ok()
         .unwrap_or_else(|error| fail(&format!("{name}: {error}")));
         let mut path = vec![0u16; 1024];
-        let len = unsafe { GetModuleFileNameW(Some(owner), &mut path) };
+        let len =
+            unsafe { GetModuleFileNameW(Some(owner), PWSTR(path.as_mut_ptr()), path.len() as u32) };
         println!("{name} {}", String::from_utf16_lossy(&path[..len as usize]));
     }
 }

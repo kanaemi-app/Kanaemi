@@ -5,9 +5,8 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-use windows::Win32::Foundation::*;
-use windows::Win32::UI::TextServices::*;
-use windows::core::*;
+use crate::bindings::*;
+use windows_core::*;
 
 use crate::candidates;
 use crate::listing::Page;
@@ -52,12 +51,12 @@ impl CandidateList {
 }
 
 /// Everything about the list may have changed with each update.
-const UPDATED: u32 = TF_CLUIE_DOCUMENTMGR
+const UPDATED: u32 = (TF_CLUIE_DOCUMENTMGR
     | TF_CLUIE_COUNT
     | TF_CLUIE_SELECTION
     | TF_CLUIE_STRING
     | TF_CLUIE_PAGEINDEX
-    | TF_CLUIE_CURRENTPAGE;
+    | TF_CLUIE_CURRENTPAGE) as u32;
 
 impl ITfUIElement_Impl for CandidateList_Impl {
     fn GetDescription(&self) -> Result<BSTR> {

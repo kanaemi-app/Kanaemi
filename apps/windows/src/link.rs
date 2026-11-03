@@ -12,13 +12,11 @@ use std::os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle};
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use windows::Win32::Foundation::{ERROR_IO_PENDING, HANDLE, WAIT_OBJECT_0};
-use windows::Win32::Storage::FileSystem::{ReadFile, WriteFile};
-use windows::Win32::System::IO::{
-    CancelIoEx, GetOverlappedResult, GetOverlappedResultEx, OVERLAPPED,
+use crate::bindings::{
+    CancelIoEx, CreateEventW, ERROR_IO_PENDING, GetOverlappedResult, GetOverlappedResultEx, HANDLE,
+    INFINITE, OVERLAPPED, ReadFile, SetEvent, WAIT_OBJECT_0, WaitForMultipleObjects, WriteFile,
 };
-use windows::Win32::System::Threading::{CreateEventW, INFINITE, SetEvent, WaitForMultipleObjects};
-use windows::core::PCWSTR;
+use windows_core::PCWSTR;
 
 use crate::control::{Lines, MAX_LINE};
 
@@ -108,10 +106,17 @@ fn serve(pipe: &File, outbox: &Outbox, received: &mut dyn FnMut(&str) -> bool) -
             hEvent: handle(&read_done),
             ..Default::default()
         };
-        if let Err(error) = unsafe { ReadFile(pipe, Some(&mut buffer), None, Some(&mut reading)) }
-            && error.code() != ERROR_IO_PENDING.to_hresult()
-        {
-            return Err(error.into());
+        let started = unsafe {
+            ReadFile(
+                pipe,
+                Some(buffer.as_mut_ptr().cast()),
+                buffer.len() as u32,
+                None,
+                Some(&mut reading),
+            )
+        };
+        if !started.as_bool() {
+            pending()?;
         }
         let sent = send_until_read(pipe, outbox, &read_done, &written);
         if !matches!(sent, Ok(true)) {
@@ -124,7 +129,7 @@ fn serve(pipe: &File, outbox: &Outbox, received: &mut dyn FnMut(&str) -> bool) -
             return sent.map(|_| ());
         }
         let mut read = 0u32;
-        unsafe { GetOverlappedResult(pipe, &reading, &mut read, false) }?;
+        unsafe { GetOverlappedResult(pipe, &reading, &mut read, false) }.ok()?;
         let Some(arrived) = lines.push(&buffer[..read as usize]) else {
             return Err(io::Error::new(
                 io::ErrorKind::InvalidData,
@@ -150,10 +155,10 @@ fn send_until_read(
     let woken_by = [handle(read_done), handle(&outbox.ready)];
     loop {
         let woke = unsafe { WaitForMultipleObjects(&woken_by, false, INFINITE) };
-        if woke == WAIT_OBJECT_0 {
+        if woke == WAIT_OBJECT_0 as u32 {
             return Ok(true);
         }
-        if woke.0 != WAIT_OBJECT_0.0 + 1 {
+        if woke != WAIT_OBJECT_0 as u32 + 1 {
             return Err(io::Error::last_os_error());
         }
         for line in outbox.take() {
@@ -170,13 +175,20 @@ fn write(pipe: HANDLE, line: &str, written: &OwnedHandle) -> io::Result<()> {
         hEvent: handle(written),
         ..Default::default()
     };
-    let started = unsafe { WriteFile(pipe, Some(line.as_bytes()), None, Some(&mut writing)) };
-    if let Err(error) = started
-        && error.code() != ERROR_IO_PENDING.to_hresult()
-    {
-        return Err(error.into());
+    let started = unsafe {
+        WriteFile(
+            pipe,
+            Some(line.as_ptr().cast()),
+            line.len() as u32,
+            None,
+            Some(&mut writing),
+        )
+    };
+    if !started.as_bool() {
+        pending()?;
     }
-    let done = unsafe { GetOverlappedResultEx(pipe, &writing, &mut 0, WRITE_WITHIN_MS, false) };
+    let done =
+        unsafe { GetOverlappedResultEx(pipe, &writing, &mut 0, WRITE_WITHIN_MS, false) }.ok();
     if let Err(error) = done {
         // The line is let go only once the write has ended.
         unsafe {
@@ -189,8 +201,22 @@ fn write(pipe: HANDLE, line: &str, written: &OwnedHandle) -> io::Result<()> {
 }
 
 fn event(manual_reset: bool) -> io::Result<OwnedHandle> {
-    let event = unsafe { CreateEventW(None, manual_reset, false, PCWSTR::null()) }?;
+    let event = unsafe { CreateEventW(None, manual_reset, false, PCWSTR::null()) };
+    if event.0.is_null() {
+        return Err(io::Error::last_os_error());
+    }
     Ok(unsafe { OwnedHandle::from_raw_handle(event.0) })
+}
+
+/// The error of the overlapped call that just failed, unless the call goes on
+/// in the background.
+fn pending() -> io::Result<()> {
+    let error = io::Error::last_os_error();
+    if error.raw_os_error() == Some(ERROR_IO_PENDING) {
+        Ok(())
+    } else {
+        Err(error)
+    }
 }
 
 fn handle(owned: &OwnedHandle) -> HANDLE {

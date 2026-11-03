@@ -1,22 +1,26 @@
 //! The text on the clipboard, for the key that pastes into the text to
 //! register.
 
-use windows::Win32::Foundation::HGLOBAL;
-use windows::Win32::System::DataExchange::{CloseClipboard, GetClipboardData, OpenClipboard};
-use windows::Win32::System::Memory::{GlobalLock, GlobalSize, GlobalUnlock};
-use windows::Win32::System::Ole::CF_UNICODETEXT;
+use crate::bindings::{
+    CF_UNICODETEXT, CloseClipboard, GetClipboardData, GlobalLock, GlobalSize, GlobalUnlock,
+    OpenClipboard,
+};
 
 /// `None` when the clipboard holds no text, or another program has it open.
 pub(crate) fn read() -> Option<String> {
-    unsafe { OpenClipboard(None) }.ok()?;
+    if !unsafe { OpenClipboard(None) }.as_bool() {
+        return None;
+    }
     let text = read_open();
     let _ = unsafe { CloseClipboard() };
     text
 }
 
 fn read_open() -> Option<String> {
-    let handle = unsafe { GetClipboardData(u32::from(CF_UNICODETEXT.0)) }.ok()?;
-    let memory = HGLOBAL(handle.0);
+    let memory = unsafe { GetClipboardData(CF_UNICODETEXT as u32) };
+    if memory.0.is_null() {
+        return None;
+    }
     let start = unsafe { GlobalLock(memory) } as *const u16;
     if start.is_null() {
         return None;

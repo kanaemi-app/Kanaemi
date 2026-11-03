@@ -8,12 +8,10 @@
 
 use std::cell::Cell;
 
-use windows::Win32::Foundation::{HWND, RECT};
-use windows::Win32::Graphics::Gdi::{
-    GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect,
-};
-use windows::Win32::UI::WindowsAndMessaging::{DestroyWindow, IsWindow};
-use windows::core::Result;
+use crate::bindings::{DestroyWindow, IsWindow};
+use crate::bindings::{GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromRect};
+use crate::bindings::{HWND, RECT};
+use windows_core::Result;
 
 use crate::placement::{Rect, place, place_above};
 
@@ -92,7 +90,7 @@ fn rect(r: RECT) -> Rect {
 
 /// The part of the monitor showing `at` that windows may use.
 fn work_area(at: RECT) -> Rect {
-    let monitor = unsafe { MonitorFromRect(&at, MONITOR_DEFAULTTONEAREST) };
+    let monitor = unsafe { MonitorFromRect(&at, MONITOR_DEFAULTTONEAREST as u32) };
     let mut info = MONITORINFO {
         cbSize: std::mem::size_of::<MONITORINFO>() as u32,
         ..Default::default()

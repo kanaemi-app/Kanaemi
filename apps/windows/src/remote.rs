@@ -16,14 +16,9 @@ use std::os::windows::fs::OpenOptionsExt;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
+use crate::bindings::*;
 use kanaemi_core::Mode;
-use windows::Win32::Foundation::{ERROR_PIPE_BUSY, HWND, LPARAM, LRESULT, WPARAM};
-use windows::Win32::Storage::FileSystem::FILE_FLAG_OVERLAPPED;
-use windows::Win32::System::Pipes::WaitNamedPipeW;
-use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::{HSTRING, PCWSTR, w};
+use windows_core::{HSTRING, PCWSTR, w};
 
 use crate::control::{Command, Report};
 use crate::link::{self, Outbox};
@@ -31,7 +26,7 @@ use crate::pipe::{self, CONTROL_CLIENT_ACCESS};
 
 const CLASS: PCWSTR = w!("KanaemiControl");
 /// Says to the window that modes wait for its thread.
-const WM_MODES_WAITING: u32 = WM_APP + 1;
+const WM_MODES_WAITING: u32 = WM_APP as u32 + 1;
 /// How long a report waits for a server busy letting another process in.
 const BUSY_WAIT_MS: u32 = 20;
 /// How many modes wait for one thread; the server sends the next only once
@@ -115,11 +110,11 @@ fn connect() -> Option<Arc<Outbox>> {
     let open = || {
         OpenOptions::new()
             .access_mode(CONTROL_CLIENT_ACCESS)
-            .custom_flags(FILE_FLAG_OVERLAPPED.0)
+            .custom_flags(FILE_FLAG_OVERLAPPED as u32)
             .open(name)
     };
     let opened = match open() {
-        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) => {
+        Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
             let _ = unsafe { WaitNamedPipeW(&HSTRING::from(name), BUSY_WAIT_MS) };
             open()
         }
@@ -177,7 +172,7 @@ fn hand_over(line: &str, outbox: &Outbox) -> bool {
                 waiting.modes.push_back((request, mode, by));
                 let window = HWND(waiting.window as *mut _);
                 unsafe { PostMessageW(Some(window), WM_MODES_WAITING, WPARAM(0), LPARAM(0)) }
-                    .is_ok()
+                    .as_bool()
             })
     };
     if !posted {
@@ -207,7 +202,7 @@ fn set_waiting_modes() {
     }
 }
 
-fn create() -> windows::core::Result<HWND> {
+fn create() -> windows_core::Result<HWND> {
     let instance = crate::com::instance();
     let class = WNDCLASSW {
         lpfnWndProc: Some(procedure),
@@ -217,12 +212,12 @@ fn create() -> windows::core::Result<HWND> {
     };
     // A second registration in the same process fails harmlessly.
     unsafe { RegisterClassW(&class) };
-    unsafe {
+    let window = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE(0),
+            0,
             CLASS,
             PCWSTR::null(),
-            WINDOW_STYLE(0),
+            0,
             0,
             0,
             0,
@@ -232,7 +227,11 @@ fn create() -> windows::core::Result<HWND> {
             Some(instance),
             None,
         )
+    };
+    if window.0.is_null() {
+        return Err(windows_core::Error::from_thread());
     }
+    Ok(window)
 }
 
 extern "system" fn procedure(
