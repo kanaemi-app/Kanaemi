@@ -37,4 +37,4 @@ xxhash-rust = { version = "0.8.19", features = ["xxh3"] }
 [target.'cfg(windows)'.build-dependencies]
 embed-resource = "3.0.11"
 ico = "0.6.0"
-resvg = { version = "0.48.1", default-features = false }
+resvg = { version = "0.49.0", default-features = false }
