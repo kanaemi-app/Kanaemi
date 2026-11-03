@@ -22,36 +22,44 @@ pub(crate) fn asks_for_no_record(scopes: &[i32]) -> bool {
 mod read {
     use std::mem::{ManuallyDrop, take};
 
-    use windows::Win32::System::Com::CoTaskMemFree;
-    use windows::Win32::System::Variant::{VT_UNKNOWN, VariantClear};
-    use windows::Win32::UI::TextServices::*;
-    use windows::core::*;
+    use crate::bindings::*;
+    use windows_core::*;
 
     // The values above are the SDK's.
     const _: () = {
-        assert!(super::PRIVATE == IS_PRIVATE.0);
-        assert!(super::SECRET[0] == IS_PASSWORD.0);
-        assert!(super::SECRET[1] == IS_NUMERIC_PASSWORD.0);
-        assert!(super::SECRET[2] == IS_NUMERIC_PIN.0);
-        assert!(super::SECRET[3] == IS_ALPHANUMERIC_PIN.0);
-        assert!(super::SECRET[4] == IS_ALPHANUMERIC_PIN_SET.0);
+        assert!(super::PRIVATE == IS_PRIVATE);
+        assert!(super::SECRET[0] == IS_PASSWORD);
+        assert!(super::SECRET[1] == IS_NUMERIC_PASSWORD);
+        assert!(super::SECRET[2] == IS_NUMERIC_PIN);
+        assert!(super::SECRET[3] == IS_ALPHANUMERIC_PIN);
+        assert!(super::SECRET[4] == IS_ALPHANUMERIC_PIN_SET);
     };
 
     /// The input scopes of `context` at its selection, or at its start
     /// when it has none, read in the edit session of `ec`. A field that
     /// tells none has none.
-    pub(crate) fn of(context: &ITfContext, ec: u32) -> Vec<i32> {
+    pub(crate) fn of(context: &ITfContext, ec: TfEditCookie) -> Vec<i32> {
         read(context, ec).unwrap_or_default()
     }
 
-    fn read(context: &ITfContext, ec: u32) -> Result<Vec<i32>> {
+    fn read(context: &ITfContext, ec: TfEditCookie) -> Result<Vec<i32>> {
         let property = unsafe { context.GetAppProperty(&GUID_PROP_INPUTSCOPE)? };
         let mut selection = [TF_SELECTION::default()];
         let mut fetched = 0;
-        let selected =
-            unsafe { context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut selection, &mut fetched) }
-                .ok()
-                .and_then(|()| ManuallyDrop::into_inner(take(&mut selection[0].range)));
+        let found = unsafe {
+            context.GetSelection(
+                ec,
+                TF_DEFAULT_SELECTION,
+                1,
+                selection.as_mut_ptr(),
+                &mut fetched,
+            )
+        };
+        let selected = if found.is_ok() {
+            ManuallyDrop::into_inner(take(&mut selection[0].range))
+        } else {
+            None
+        };
         let range = match selected {
             Some(range) => range,
             None => unsafe { context.GetStart(ec)? },
@@ -59,7 +67,7 @@ mod read {
         let mut value = unsafe { property.GetValue(ec, &range)? };
         let unknown = unsafe {
             let inner = &value.Anonymous.Anonymous;
-            if inner.vt == VT_UNKNOWN {
+            if inner.vt == VARTYPE(VT_UNKNOWN as u16) {
                 (*inner.Anonymous.punkVal).clone()
             } else {
                 None
@@ -74,15 +82,12 @@ mod read {
         let scope: ITfInputScope = unknown.cast()?;
         let mut scopes = std::ptr::null_mut();
         let mut count = 0;
-        unsafe { scope.GetInputScopes(&mut scopes, &mut count)? };
+        unsafe { scope.GetInputScopes(&mut scopes, &mut count) }.ok()?;
         if scopes.is_null() {
             return Ok(Vec::new());
         }
-        let read = unsafe { std::slice::from_raw_parts(scopes, count as usize) }
-            .iter()
-            .map(|scope| scope.0)
-            .collect();
-        unsafe { CoTaskMemFree(Some(scopes.cast_const().cast())) };
+        let read = unsafe { std::slice::from_raw_parts(scopes, count as usize) }.to_vec();
+        unsafe { CoTaskMemFree(scopes.cast()) };
         Ok(read)
     }
 }

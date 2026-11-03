@@ -7,20 +7,10 @@ use std::collections::VecDeque;
 use std::panic::{AssertUnwindSafe, catch_unwind};
 use std::rc::Rc;
 
+use crate::bindings::*;
 use kanaemi_core::{Chord, Event, Key, Mode, Modifiers, Output};
 use kanaemi_runtime::{Access, Field, Profile, registration_hint};
-use windows::Win32::Foundation::*;
-use windows::Win32::System::SystemInformation::GetTickCount64;
-use windows::Win32::System::Threading::GetCurrentThreadId;
-use windows::Win32::UI::Input::KeyboardAndMouse::*;
-use windows::Win32::UI::TextServices::*;
-use windows::Win32::UI::WindowsAndMessaging::{
-    CallNextHookEx, EnumThreadWindows, GA_ROOT, GUITHREADINFO, GetAncestor, GetClassNameW,
-    GetGUIThreadInfo, GetMessageExtraInfo, GetWindowRect, GetWindowThreadProcessId, HHOOK,
-    IsWindowVisible, SetWindowsHookExW, UnhookWindowsHookEx, WH_MOUSE, WM_LBUTTONDOWN,
-    WM_MBUTTONDOWN, WM_NCLBUTTONDOWN, WM_NCMBUTTONDOWN, WM_NCRBUTTONDOWN, WM_RBUTTONDOWN,
-};
-use windows::core::*;
+use windows_core::*;
 
 use crate::control::Tracker;
 use crate::focus::{self, Change};
@@ -48,7 +38,7 @@ thread_local! {
 unsafe extern "system" fn mouse_proc(code: i32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
     if code >= 0
         && matches!(
-            wparam.0 as u32,
+            wparam.0 as i32,
             WM_LBUTTONDOWN
                 | WM_RBUTTONDOWN
                 | WM_MBUTTONDOWN
@@ -68,9 +58,12 @@ fn watch_clicks() {
     if MOUSE_HOOK.get().is_some() {
         return;
     }
-    match unsafe { SetWindowsHookExW(WH_MOUSE, Some(mouse_proc), None, GetCurrentThreadId()) } {
-        Ok(hook) => MOUSE_HOOK.set(Some(hook)),
-        Err(error) => tracing::warn!(%error, "clicks not watched"),
+    let hook = unsafe { SetWindowsHookExW(WH_MOUSE, Some(mouse_proc), None, GetCurrentThreadId()) };
+    if hook.0.is_null() {
+        let error = Error::from_thread();
+        tracing::warn!(%error, "clicks not watched");
+    } else {
+        MOUSE_HOOK.set(Some(hook));
     }
 }
 
@@ -117,7 +110,7 @@ fn guarded<T>(fallback: T, callback: impl FnOnce() -> T) -> T {
 #[derive(Default)]
 struct State {
     thread_mgr: RefCell<Option<ITfThreadMgr>>,
-    client_id: Cell<u32>,
+    client_id: Cell<TfClientId>,
     thread_mgr_cookie: Cell<u32>,
     /// The text service as the sink of its compositions, while active.
     sink: RefCell<Option<ITfCompositionSink>>,
@@ -193,12 +186,19 @@ struct Session {
 }
 
 impl Session {
-    fn set_text(&self, ec: u32, text: &str) -> Result<()> {
+    fn set_text(&self, ec: TfEditCookie, text: &str) -> Result<()> {
         let composition = match self.state.composition(&self.context) {
             Some(composition) => composition,
             None => {
                 let insert: ITfInsertAtSelection = self.context.cast()?;
-                let range = unsafe { insert.InsertTextAtSelection(ec, TF_IAS_QUERYONLY, &[])? };
+                let range = unsafe {
+                    insert.InsertTextAtSelection(
+                        ec,
+                        TF_IAS_QUERYONLY as u32,
+                        std::ptr::null(),
+                        0,
+                    )?
+                };
                 let compose: ITfContextComposition = self.context.cast()?;
                 let composition = unsafe { compose.StartComposition(ec, &range, &self.sink)? };
                 self.state
@@ -210,31 +210,33 @@ impl Session {
         };
         let range = unsafe { composition.GetRange()? };
         let wide: Vec<u16> = text.encode_utf16().collect();
-        unsafe { range.SetText(ec, 0, &wide)? };
+        unsafe { range.SetText(ec, 0, wide.as_ptr(), wide.len() as i32) }.ok()?;
         // The caret stays at the end: some applications draw no caret
         // inside a composition.
         caret_at_end(&self.context, ec, &range)
     }
 
-    fn end(&self, ec: u32) -> Result<()> {
+    fn end(&self, ec: TfEditCookie) -> Result<()> {
         if let Some(composition) = self.state.take_composition(|(c, _)| *c == self.context) {
-            unsafe { composition.EndComposition(ec)? };
+            unsafe { composition.EndComposition(ec) }.ok()?;
         }
         Ok(())
     }
 
     /// Where `range` is on the screen. Before the application has laid it
     /// out, there is no answer.
-    fn rect_of(&self, ec: u32, range: &ITfRange) -> Option<RECT> {
+    fn rect_of(&self, ec: TfEditCookie, range: &ITfRange) -> Option<RECT> {
         let view = unsafe { self.context.GetActiveView() }.ok()?;
         let mut rect = RECT::default();
-        let mut clipped = FALSE;
-        unsafe { view.GetTextExt(ec, range, &mut rect, &mut clipped) }.ok()?;
+        let mut clipped = BOOL::default();
+        unsafe { view.GetTextExt(ec, range, &mut rect, &mut clipped) }
+            .is_ok()
+            .then_some(())?;
         (rect.bottom > rect.top).then_some(rect)
     }
 
     /// Where the composition is, or else the caret.
-    fn text_rect(&self, ec: u32) -> Option<RECT> {
+    fn text_rect(&self, ec: TfEditCookie) -> Option<RECT> {
         if let Some(composition) = self.state.composition(&self.context) {
             let range = unsafe { composition.GetRange() }.ok()?;
             return self.rect_of(ec, &range);
@@ -242,10 +244,16 @@ impl Session {
         let mut selection = [TF_SELECTION::default()];
         let mut fetched = 0;
         unsafe {
-            self.context
-                .GetSelection(ec, TF_DEFAULT_SELECTION, &mut selection, &mut fetched)
+            self.context.GetSelection(
+                ec,
+                TF_DEFAULT_SELECTION,
+                1,
+                selection.as_mut_ptr(),
+                &mut fetched,
+            )
         }
-        .ok()?;
+        .is_ok()
+        .then_some(())?;
         let range = std::mem::ManuallyDrop::into_inner(std::mem::take(&mut selection[0].range))?;
         self.rect_of(ec, &range)
     }
@@ -264,9 +272,10 @@ impl Session {
             ..Default::default()
         };
         let (gui_focus, gui_active) =
-            match unsafe { GetGUIThreadInfo(GetCurrentThreadId(), &mut gui) } {
-                Ok(()) => (Some(gui.hwndFocus), Some(gui.hwndActive)),
-                Err(_) => (None, None),
+            if unsafe { GetGUIThreadInfo(GetCurrentThreadId(), &mut gui) }.as_bool() {
+                (Some(gui.hwndFocus), Some(gui.hwndActive))
+            } else {
+                (None, None)
             };
         [
             viewed,
@@ -278,11 +287,11 @@ impl Session {
         .into_iter()
         .flatten()
         .find_map(|window| {
-            if window.is_invalid() {
+            if window.0.is_null() {
                 return None;
             }
-            let root = Some(unsafe { GetAncestor(window, GA_ROOT) })
-                .filter(|r| !r.is_invalid())
+            let root = Some(unsafe { GetAncestor(window, GA_ROOT as u32) })
+                .filter(|r| !r.0.is_null())
                 .unwrap_or(window);
             let mut process = 0;
             unsafe { GetWindowThreadProcessId(root, Some(&mut process)) };
@@ -292,11 +301,13 @@ impl Session {
 
     /// Where to show something by the text: below it, or else at the
     /// window's top corner.
-    fn place(&self, ec: u32, owner: Option<HWND>) -> RECT {
+    fn place(&self, ec: TfEditCookie, owner: Option<HWND>) -> RECT {
         self.text_rect(ec)
             .or_else(|| {
                 let mut rect = RECT::default();
-                unsafe { GetWindowRect(owner?, &mut rect) }.ok()?;
+                unsafe { GetWindowRect(owner?, &mut rect) }
+                    .as_bool()
+                    .then_some(())?;
                 Some(RECT {
                     bottom: rect.top,
                     ..rect
@@ -321,19 +332,19 @@ impl Session {
             return;
         };
         let element: ITfUIElement = CandidateList::new(self.state.listed.clone(), document).into();
-        let mut show = TRUE;
+        let mut show = BOOL::from(true);
         let mut id = 0;
-        let shown = match unsafe { manager.BeginUIElement(&element, &mut show, &mut id) } {
-            Ok(()) => {
-                *self.state.element.borrow_mut() = Some(id);
-                show.as_bool()
-            }
-            Err(_) => true,
+        let begun = unsafe { manager.BeginUIElement(&element, &mut show, &mut id) };
+        let shown = if begun.is_ok() {
+            *self.state.element.borrow_mut() = Some(id);
+            show.as_bool()
+        } else {
+            true
         };
         self.state.listed.borrow_mut().shown = shown;
     }
 
-    fn apply(&self, ec: u32, edit: Edit) -> Result<()> {
+    fn apply(&self, ec: TfEditCookie, edit: Edit) -> Result<()> {
         if let Some(text) = edit.commit {
             self.set_text(ec, &text)?;
             self.end(ec)?;
@@ -371,7 +382,7 @@ impl Session {
 }
 
 impl ITfEditSession_Impl for Session_Impl {
-    fn DoEditSession(&self, ec: u32) -> Result<()> {
+    fn DoEditSession(&self, ec: TfEditCookie) -> Result<()> {
         // Every edit waiting for this document, in the order they came: a
         // synchronous session runs ahead of an asynchronous one still
         // pending, and would otherwise put its text before the earlier.
@@ -402,7 +413,7 @@ struct ScopeSession {
 }
 
 impl ITfEditSession_Impl for ScopeSession_Impl {
-    fn DoEditSession(&self, ec: u32) -> Result<()> {
+    fn DoEditSession(&self, ec: TfEditCookie) -> Result<()> {
         guarded(Err(E_FAIL.into()), || {
             // The focus may have gone elsewhere before the session ran.
             if self.state.focused.borrow().as_ref() != Some(&self.context) {
@@ -582,17 +593,17 @@ impl State {
         }
         .into();
         let flags = if sync {
-            TF_ES_SYNC | TF_ES_READWRITE
+            (TF_ES_SYNC | TF_ES_READWRITE) as u32
         } else {
-            TF_ES_ASYNCDONTCARE | TF_ES_READWRITE
+            (TF_ES_ASYNCDONTCARE | TF_ES_READWRITE) as u32
         };
         let request =
             |flags| unsafe { context.RequestEditSession(self.client_id.get(), &session, flags) };
         let mut result = request(flags);
         // Some applications refuse to edit synchronously while handling a
         // key; the edit then runs as soon as they can, still before the next.
-        if sync && result == Ok(TF_E_SYNCHRONOUS) {
-            result = request(TF_ES_ASYNCDONTCARE | TF_ES_READWRITE);
+        if sync && result == Ok(HRESULT(TF_E_SYNCHRONOUS)) {
+            result = request((TF_ES_ASYNCDONTCARE | TF_ES_READWRITE) as u32);
         }
         let failure = match result {
             Ok(outcome) => outcome.is_err().then(|| Error::from(outcome)),
@@ -668,7 +679,7 @@ impl State {
             context: context.clone(),
         }
         .into();
-        let flags = TF_ES_ASYNCDONTCARE | TF_ES_READ;
+        let flags = (TF_ES_ASYNCDONTCARE | TF_ES_READ) as u32;
         let result = unsafe { context.RequestEditSession(self.client_id.get(), &session, flags) };
         let failure = match result {
             Ok(outcome) => outcome.is_err().then(|| Error::from(outcome)),
@@ -735,17 +746,17 @@ impl State {
 }
 
 /// Puts the caret at the end of `range`.
-fn caret_at_end(context: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
+fn caret_at_end(context: &ITfContext, ec: TfEditCookie, range: &ITfRange) -> Result<()> {
     let caret = unsafe { range.Clone()? };
-    unsafe { caret.Collapse(ec, TF_ANCHOR_END)? };
+    unsafe { caret.Collapse(ec, TF_ANCHOR_END) }.ok()?;
     let mut selection = [TF_SELECTION {
         range: std::mem::ManuallyDrop::new(Some(caret)),
         style: TF_SELECTIONSTYLE {
             ase: TF_AE_NONE,
-            fInterimChar: FALSE,
+            fInterimChar: false.into(),
         },
     }];
-    let set = unsafe { context.SetSelection(ec, &selection) };
+    let set = unsafe { context.SetSelection(ec, 1, selection.as_ptr()) }.ok();
     // The selection holds its range by hand; it is let go whatever the
     // outcome.
     unsafe { std::mem::ManuallyDrop::drop(&mut selection[0].range) };
@@ -753,11 +764,19 @@ fn caret_at_end(context: &ITfContext, ec: u32, range: &ITfRange) -> Result<()> {
 }
 
 /// Whether the selection lies within `range`, ends included.
-fn selection_within(context: &ITfContext, ec: u32, range: &ITfRange) -> bool {
+fn selection_within(context: &ITfContext, ec: TfEditCookie, range: &ITfRange) -> bool {
     let mut selection = [TF_SELECTION::default()];
     let mut fetched = 0;
-    if unsafe { context.GetSelection(ec, TF_DEFAULT_SELECTION, &mut selection, &mut fetched) }
-        .is_err()
+    if unsafe {
+        context.GetSelection(
+            ec,
+            TF_DEFAULT_SELECTION,
+            1,
+            selection.as_mut_ptr(),
+            &mut fetched,
+        )
+    }
+    .is_err()
         || fetched == 0
     {
         return false;
@@ -779,13 +798,14 @@ fn shown_window_of_this_thread() -> Option<HWND> {
     extern "system" fn found(window: HWND, out: LPARAM) -> BOOL {
         let out = unsafe { &mut *(out.0 as *mut Option<HWND>) };
         let mut class = [0u16; 64];
-        let len = unsafe { GetClassNameW(window, &mut class) } as usize;
+        let len = unsafe { GetClassNameW(window, PWSTR(class.as_mut_ptr()), class.len() as i32) }
+            as usize;
         let ours = String::from_utf16_lossy(&class[..len]).starts_with("Kanaemi");
         if !ours && unsafe { IsWindowVisible(window) }.as_bool() {
             *out = Some(window);
-            return FALSE;
+            return false.into();
         }
-        TRUE
+        true.into()
     }
     let mut out: Option<HWND> = None;
     unsafe {
@@ -834,8 +854,16 @@ fn character(vk: u16, scan: u16, shift: bool) -> Option<char> {
     }
     let mut buffer = [0u16; 4];
     // Flag 4 leaves the keyboard's dead-key state as it is.
-    let written =
-        unsafe { ToUnicode(u32::from(vk), u32::from(scan), Some(&state), &mut buffer, 4) };
+    let written = unsafe {
+        ToUnicode(
+            u32::from(vk),
+            u32::from(scan),
+            Some(state.as_ptr()),
+            PWSTR(buffer.as_mut_ptr()),
+            buffer.len() as i32,
+            4,
+        )
+    };
     if written != 1 {
         return None;
     }
@@ -862,20 +890,20 @@ fn send_key(chord: Chord) -> bool {
     };
     tracing::info!(chord = %kanaemi_runtime::LoggedChord(chord), vk, "key sent");
     let input = |vk: u16, up: bool| INPUT {
-        r#type: INPUT_KEYBOARD,
+        r#type: INPUT_KEYBOARD as u32,
         Anonymous: INPUT_0 {
             ki: KEYBDINPUT {
-                wVk: VIRTUAL_KEY(vk),
+                wVk: vk,
                 wScan: 0,
                 dwFlags: {
-                    let mut flags = KEYBD_EVENT_FLAGS(0);
+                    let mut flags = 0;
                     if up {
-                        flags |= KEYEVENTF_KEYUP;
+                        flags |= KEYEVENTF_KEYUP as u32;
                     }
                     // Without it, a right-hand modifier is the left one and an
                     // arrow is the number pad's.
                     if keys::is_extended(vk) {
-                        flags |= KEYEVENTF_EXTENDEDKEY;
+                        flags |= KEYEVENTF_EXTENDEDKEY as u32;
                     }
                     flags
                 },
@@ -922,7 +950,7 @@ fn send_key(chord: Chord) -> bool {
 }
 
 impl ITfTextInputProcessor_Impl for TextService_Impl {
-    fn Activate(&self, ptim: Ref<ITfThreadMgr>, tid: u32) -> Result<()> {
+    fn Activate(&self, ptim: Ref<ITfThreadMgr>, tid: TfClientId) -> Result<()> {
         ITfTextInputProcessorEx_Impl::ActivateEx(self, ptim, tid, 0)
     }
 
@@ -965,7 +993,7 @@ impl ITfTextInputProcessor_Impl for TextService_Impl {
 }
 
 impl ITfTextInputProcessorEx_Impl for TextService_Impl {
-    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: u32, _flags: u32) -> Result<()> {
+    fn ActivateEx(&self, ptim: Ref<ITfThreadMgr>, tid: TfClientId, _flags: u32) -> Result<()> {
         guarded(Err(E_FAIL.into()), || {
             crate::init_logging();
             let state = &self.state;
@@ -973,7 +1001,7 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
             let keystrokes: ITfKeystrokeMgr = thread_mgr.cast()?;
             let source: ITfSource = thread_mgr.cast()?;
             let key_sink: ITfKeyEventSink = self.to_interface();
-            unsafe { keystrokes.AdviseKeyEventSink(tid, &key_sink, true)? };
+            unsafe { keystrokes.AdviseKeyEventSink(tid, &key_sink, true) }.ok()?;
             let focus_sink: ITfThreadMgrEventSink = self.to_interface();
             let cookie =
                 match unsafe { source.AdviseSink(&ITfThreadMgrEventSink::IID, &focus_sink) } {
@@ -1025,7 +1053,11 @@ impl ITfTextInputProcessorEx_Impl for TextService_Impl {
 impl ITfCompositionSink_Impl for TextService_Impl {
     /// The application ended the composition, as on a click elsewhere: the
     /// text it keeps is what would be committed, without the marks.
-    fn OnCompositionTerminated(&self, ec: u32, composition: Ref<ITfComposition>) -> Result<()> {
+    fn OnCompositionTerminated(
+        &self,
+        ec: TfEditCookie,
+        composition: Ref<ITfComposition>,
+    ) -> Result<()> {
         guarded(Ok(()), || {
             let state = &self.state;
             if let Some(ended) = composition.as_ref() {
@@ -1056,7 +1088,7 @@ impl ITfCompositionSink_Impl for TextService_Impl {
                 // caret the click that ended it put elsewhere stays there.
                 let caret_inside = selection_within(&context, ec, &range);
                 let wide: Vec<u16> = text.encode_utf16().collect();
-                unsafe { range.SetText(ec, 0, &wide)? };
+                unsafe { range.SetText(ec, 0, wide.as_ptr(), wide.len() as i32) }.ok()?;
                 if caret_inside {
                     caret_at_end(&context, ec, &range)?;
                 }
@@ -1130,24 +1162,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Result<BOOL> {
-        guarded(Ok(FALSE), || {
+        guarded(Ok(false.into()), || {
             if sent_here() {
                 tracing::info!(vk = wparam.0, "sent key came back; passed on");
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             let state = &self.state;
             // A key tested and eaten comes again to OnKeyDown, which reads
             // it as this press read it.
             let Some(event) = state.key(wparam, lparam, true, "test-down") else {
-                return Ok(FALSE);
+                return Ok(false.into());
             };
             if state.would_consume(event) {
                 tracing::info!("key tested eaten; handled when it comes again");
-                return Ok(TRUE);
+                return Ok(true.into());
             }
             state.tested.set(Some((wparam.0, lparam.0)));
             state.dispatch(event, context.as_ref(), true);
-            Ok(FALSE)
+            Ok(false.into())
         })
     }
 
@@ -1157,34 +1189,34 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
         wparam: WPARAM,
         lparam: LPARAM,
     ) -> Result<BOOL> {
-        guarded(Ok(FALSE), || {
+        guarded(Ok(false.into()), || {
             let state = &self.state;
             if sent_here() {
                 // OnKeyUp may follow for the same release; it is counted once.
                 state.tested.set(Some((wparam.0, lparam.0)));
                 state.sent_key_up(wparam, context.as_ref());
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             state.tested.set(Some((wparam.0, lparam.0)));
             if let Some(event) = state.key(wparam, lparam, false, "test-up") {
                 state.dispatch(event, context.as_ref(), false);
             }
-            Ok(FALSE)
+            Ok(false.into())
         })
     }
 
     fn OnKeyDown(&self, context: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
-        guarded(Ok(FALSE), || {
+        guarded(Ok(false.into()), || {
             if sent_here() {
                 tracing::info!(vk = wparam.0, "sent key came back; passed on");
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             let state = &self.state;
             if state.tested.take() == Some((wparam.0, lparam.0)) {
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             let Some(event) = state.key(wparam, lparam, true, "down") else {
-                return Ok(FALSE);
+                return Ok(false.into());
             };
             let eaten = state.dispatch(event, context.as_ref(), true);
             tracing::info!(eaten, "key answered");
@@ -1195,24 +1227,24 @@ impl ITfKeyEventSink_Impl for TextService_Impl {
     /// A release is never eaten. The application saw the press, or the core
     /// held it back and types what it meant now, as the release ends it.
     fn OnKeyUp(&self, context: Ref<ITfContext>, wparam: WPARAM, lparam: LPARAM) -> Result<BOOL> {
-        guarded(Ok(FALSE), || {
+        guarded(Ok(false.into()), || {
             let state = &self.state;
             if state.tested.take() == Some((wparam.0, lparam.0)) {
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             if sent_here() {
                 state.sent_key_up(wparam, context.as_ref());
-                return Ok(FALSE);
+                return Ok(false.into());
             }
             if let Some(event) = state.key(wparam, lparam, false, "up") {
                 state.dispatch(event, context.as_ref(), false);
             }
-            Ok(FALSE)
+            Ok(false.into())
         })
     }
 
     fn OnPreservedKey(&self, _context: Ref<ITfContext>, _guid: *const GUID) -> Result<BOOL> {
-        Ok(FALSE)
+        Ok(false.into())
     }
 }
 
@@ -1227,9 +1259,9 @@ impl ITfFunction_Impl for TextService_Impl {
 }
 
 impl ITfFnConfigure_Impl for TextService_Impl {
-    fn Show(&self, _parent: HWND, _langid: u16, _profile: *const GUID) -> Result<()> {
+    unsafe fn Show(&self, _parent: HWND, _langid: u16, _profile: *const GUID) -> HRESULT {
         guarded((), open_settings_app);
-        Ok(())
+        S_OK
     }
 }
 

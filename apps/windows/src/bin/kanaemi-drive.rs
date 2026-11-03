@@ -41,28 +41,20 @@ mod drive {
     use std::thread::sleep;
     use std::time::Duration;
 
-    use windows::Win32::Foundation::*;
-    use windows::Win32::System::Com::*;
-    use windows::Win32::UI::Input::KeyboardAndMouse::*;
-    use windows::Win32::UI::TextServices::*;
-    use windows::Win32::UI::WindowsAndMessaging::*;
-    use windows::core::*;
+    use kanaemi::bindings::*;
+    use windows_core::*;
 
     use kanaemi::com::{CLSID_KANAEMI as CLSID, PROFILE_KANAEMI as PROFILE};
     const OUT: &str = r"C:\Users\Public\kanaemi_drive.txt";
 
-    fn key(vk: VIRTUAL_KEY, scan: u16, up: bool) -> INPUT {
+    fn key(vk: i32, scan: u16, up: bool) -> INPUT {
         INPUT {
-            r#type: INPUT_KEYBOARD,
+            r#type: INPUT_KEYBOARD as u32,
             Anonymous: INPUT_0 {
                 ki: KEYBDINPUT {
-                    wVk: vk,
+                    wVk: vk as u16,
                     wScan: scan,
-                    dwFlags: if up {
-                        KEYEVENTF_KEYUP
-                    } else {
-                        KEYBD_EVENT_FLAGS(0)
-                    },
+                    dwFlags: if up { KEYEVENTF_KEYUP as u32 } else { 0 },
                     time: 0,
                     dwExtraInfo: 0,
                 },
@@ -77,11 +69,11 @@ mod drive {
         }
     }
 
-    fn tap(vk: VIRTUAL_KEY) {
+    fn tap(vk: i32) {
         send(&[key(vk, 0, false), key(vk, 0, true)]);
     }
 
-    fn chord(modifier: VIRTUAL_KEY, vk: VIRTUAL_KEY) {
+    fn chord(modifier: i32, vk: i32) {
         send(&[
             key(modifier, 0x2a, false),
             key(vk, 0, false),
@@ -90,24 +82,30 @@ mod drive {
         ]);
     }
 
+    fn find_window(
+        parent: Option<HWND>,
+        after: Option<HWND>,
+        class: PCWSTR,
+        name: PCWSTR,
+    ) -> Option<HWND> {
+        let window = unsafe { FindWindowExW(parent, after, class, name) };
+        (!window.0.is_null()).then_some(window)
+    }
+
     /// The text of Notepad's editor, read from the control itself: Kanaemi's
     /// default bindings turn Ctrl+A into Home, so select-all and copy would not.
     fn editor(notepad: HWND) -> Option<HWND> {
         for class in [w!("RichEditD2DPT"), w!("Edit")] {
-            if let Ok(h) = unsafe { FindWindowExW(Some(notepad), None, class, PCWSTR::null()) } {
+            if let Some(h) = find_window(Some(notepad), None, class, PCWSTR::null()) {
                 return Some(h);
             }
             // Windows 11 Notepad nests the editor one level down.
-            let mut child =
-                unsafe { FindWindowExW(Some(notepad), None, PCWSTR::null(), PCWSTR::null()) }.ok();
+            let mut child = find_window(Some(notepad), None, PCWSTR::null(), PCWSTR::null());
             while let Some(c) = child {
-                if let Ok(h) = unsafe { FindWindowExW(Some(c), None, class, PCWSTR::null()) } {
+                if let Some(h) = find_window(Some(c), None, class, PCWSTR::null()) {
                     return Some(h);
                 }
-                child = unsafe {
-                    FindWindowExW(Some(notepad), Some(c), PCWSTR::null(), PCWSTR::null())
-                }
-                .ok();
+                child = find_window(Some(notepad), Some(c), PCWSTR::null(), PCWSTR::null());
             }
         }
         None
@@ -118,9 +116,9 @@ mod drive {
         let n = unsafe {
             SendMessageW(
                 editor,
-                WM_GETTEXT,
-                Some(WPARAM(buffer.len())),
-                Some(LPARAM(buffer.as_mut_ptr() as isize)),
+                WM_GETTEXT as u32,
+                WPARAM(buffer.len()),
+                LPARAM(buffer.as_mut_ptr() as isize),
             )
         };
         String::from_utf16_lossy(&buffer[..n.0 as usize])
@@ -131,24 +129,23 @@ mod drive {
         unsafe {
             SendMessageW(
                 editor,
-                WM_SETTEXT,
-                None,
-                Some(LPARAM(empty.as_ptr() as isize)),
+                WM_SETTEXT as u32,
+                WPARAM(0),
+                LPARAM(empty.as_ptr() as isize),
             )
         };
     }
 
     fn set_clipboard(text: &str) -> Result<()> {
-        use windows::Win32::System::DataExchange::*;
-        use windows::Win32::System::Memory::*;
-        use windows::Win32::System::Ole::CF_UNICODETEXT;
-
         let wide: Vec<u16> = text.encode_utf16().chain([0]).collect();
         unsafe {
-            OpenClipboard(None)?;
+            OpenClipboard(None).ok()?;
             let set = (|| {
-                EmptyClipboard()?;
-                let memory = GlobalAlloc(GMEM_MOVEABLE, wide.len() * 2)?;
+                EmptyClipboard().ok()?;
+                let memory = GlobalAlloc(GMEM_MOVEABLE as u32, wide.len() * 2);
+                if memory.0.is_null() {
+                    return Err(Error::from_thread());
+                }
                 let start = GlobalLock(memory) as *mut u16;
                 if start.is_null() {
                     return Err(Error::from(E_FAIL));
@@ -157,11 +154,15 @@ mod drive {
                 let _ = GlobalUnlock(memory);
                 // The clipboard owns the memory once it holds it; until then
                 // it is the driver's to free.
-                let set = SetClipboardData(u32::from(CF_UNICODETEXT.0), Some(HANDLE(memory.0)));
-                if set.is_err() {
-                    let _ = GlobalFree(Some(memory));
+                if SetClipboardData(CF_UNICODETEXT as u32, Some(memory))
+                    .0
+                    .is_null()
+                {
+                    let error = Error::from_thread();
+                    let _ = GlobalFree(memory);
+                    return Err(error);
                 }
-                set.map(|_| ())
+                Ok(())
             })();
             let _ = CloseClipboard();
             set
@@ -195,12 +196,13 @@ mod drive {
         };
         let mut out = Vec::new();
         let mut after = None;
-        while let Ok(window) = unsafe { FindWindowExW(None, after, class, PCWSTR::null()) } {
+        while let Some(window) = find_window(None, after, class, PCWSTR::null()) {
             let mut rect = RECT::default();
             unsafe {
                 let _ = GetWindowRect(window, &mut rect);
             }
-            let owner = unsafe { GetWindow(window, GW_OWNER) }.ok();
+            let owner =
+                Some(unsafe { GetWindow(window, GW_OWNER as u32) }).filter(|o| !o.0.is_null());
             out.push(format!(
                 "window {:?} in {} visible={} rect=({},{})-({},{}) owner={}",
                 window.0,
@@ -220,7 +222,7 @@ mod drive {
     /// Whether a window of Kanaemi's `class` shows, in whichever application.
     fn visible(class: PCWSTR) -> bool {
         let mut after = None;
-        while let Ok(window) = unsafe { FindWindowExW(None, after, class, PCWSTR::null()) } {
+        while let Some(window) = find_window(None, after, class, PCWSTR::null()) {
             if unsafe { IsWindowVisible(window) }.as_bool() {
                 return true;
             }
@@ -235,14 +237,11 @@ mod drive {
         type GetWindowBand = unsafe extern "system" fn(HWND, *mut u32) -> BOOL;
         let mut band = 0;
         unsafe {
-            let Ok(user32) =
-                windows::Win32::System::LibraryLoader::GetModuleHandleW(w!("user32.dll"))
-            else {
+            let user32 = GetModuleHandleW(w!("user32.dll"));
+            if user32.0.is_null() {
                 return 0;
-            };
-            if let Some(found) =
-                windows::Win32::System::LibraryLoader::GetProcAddress(user32, s!("GetWindowBand"))
-            {
+            }
+            if let Some(found) = GetProcAddress(user32, s!("GetWindowBand")) {
                 let get: GetWindowBand = std::mem::transmute(found);
                 let _ = get(window, &mut band);
             }
@@ -253,15 +252,14 @@ mod drive {
     /// The top-level windows of the process that has a window of `class`,
     /// with their thread, class, band and place, to see what could own it.
     fn siblings(class: PCWSTR) -> Vec<String> {
-        let Ok(ours) = (unsafe { FindWindowExW(None, None, class, PCWSTR::null()) }) else {
+        let Some(ours) = find_window(None, None, class, PCWSTR::null()) else {
             return vec!["no window".into()];
         };
         let mut pid = 0;
         unsafe { GetWindowThreadProcessId(ours, Some(&mut pid)) };
         let mut out = Vec::new();
         let mut after = None;
-        while let Ok(window) = unsafe { FindWindowExW(None, after, PCWSTR::null(), PCWSTR::null()) }
-        {
+        while let Some(window) = find_window(None, after, PCWSTR::null(), PCWSTR::null()) {
             after = Some(window);
             let mut owner_pid = 0;
             let thread = unsafe { GetWindowThreadProcessId(window, Some(&mut owner_pid)) };
@@ -269,7 +267,8 @@ mod drive {
                 continue;
             }
             let mut name = [0u16; 128];
-            let len = unsafe { GetClassNameW(window, &mut name) } as usize;
+            let len = unsafe { GetClassNameW(window, PWSTR(name.as_mut_ptr()), name.len() as i32) }
+                as usize;
             let band = window_band(window);
             let mut rect = RECT::default();
             unsafe {
@@ -291,8 +290,8 @@ mod drive {
 
     fn notepad_windows() -> Vec<HWND> {
         let mut found = Vec::new();
-        while let Ok(window) =
-            unsafe { FindWindowExW(None, found.last().copied(), w!("Notepad"), PCWSTR::null()) }
+        while let Some(window) =
+            find_window(None, found.last().copied(), w!("Notepad"), PCWSTR::null())
         {
             found.push(window);
         }
@@ -314,7 +313,9 @@ mod drive {
             sleep(Duration::from_millis(200));
             let ours = notepad_windows().into_iter().find(|&window| {
                 let mut title = [0u16; 512];
-                let len = unsafe { GetWindowTextW(window, &mut title) } as usize;
+                let len = unsafe {
+                    GetWindowTextW(window, PWSTR(title.as_mut_ptr()), title.len() as i32)
+                } as usize;
                 String::from_utf16_lossy(&title[..len]).starts_with(&name)
             });
             if let Some(window) = ours {
@@ -331,7 +332,7 @@ mod drive {
         let keys: Vec<String> = std::env::args().skip(1).collect();
         let found;
         unsafe {
-            CoInitializeEx(None, COINIT_APARTMENTTHREADED).ok()?;
+            CoInitializeEx(None, COINIT_APARTMENTTHREADED as u32).ok()?;
             // Without Notepad the keys still go, as to the Start menu, but
             // there is no text to read back.
             found = match notepad_window() {
@@ -356,16 +357,18 @@ mod drive {
             }
             let mgr: ITfInputProcessorProfileMgr =
                 CoCreateInstance(&CLSID_TF_InputProcessorProfiles, None, CLSCTX_INPROC_SERVER)?;
-            let r = mgr.ActivateProfile(
-                TF_PROFILETYPE_INPUTPROCESSOR,
-                0x0411,
-                &CLSID,
-                &PROFILE,
-                HKL::default(),
-                TF_IPPMF_FORSESSION
-                    | TF_IPPMF_ENABLEPROFILE
-                    | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE,
-            );
+            let r = mgr
+                .ActivateProfile(
+                    TF_PROFILETYPE_INPUTPROCESSOR as u32,
+                    LANGID(0x0411),
+                    &CLSID,
+                    &PROFILE,
+                    HKL::default(),
+                    (TF_IPPMF_FORSESSION
+                        | TF_IPPMF_ENABLEPROFILE
+                        | TF_IPPMF_DONTCARECURRENTINPUTLANGUAGE) as u32,
+                )
+                .ok();
             report.push(format!("activate profile: {r:?}"));
             sleep(Duration::from_millis(800));
         }
@@ -385,7 +388,7 @@ mod drive {
                     if scanned == -1 {
                         report.push(format!("no key types {ctrl:?}"));
                     } else {
-                        let vk = VIRTUAL_KEY((scanned & 0xff) as u16);
+                        let vk = i32::from(scanned & 0xff);
                         let shifted = scanned & 0x100 != 0;
                         let mut inputs = vec![key(VK_CONTROL, 0x1d, false)];
                         if shifted {
@@ -448,7 +451,7 @@ mod drive {
                             report.push(format!("no key types {:?}", char::from_u32(c.into())));
                             continue;
                         }
-                        let vk = VIRTUAL_KEY((scanned & 0xff) as u16);
+                        let vk = i32::from(scanned & 0xff);
                         if scanned & 0x100 != 0 {
                             chord(VK_SHIFT, vk);
                         } else {

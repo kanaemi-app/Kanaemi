@@ -1,9 +1,7 @@
 use std::cell::{Cell, RefCell};
 
-use windows::Win32::Foundation::*;
-use windows::Win32::Graphics::Gdi::*;
-use windows::Win32::UI::WindowsAndMessaging::*;
-use windows::core::*;
+use crate::bindings::*;
+use windows_core::*;
 
 use crate::listing::PADDING;
 use crate::popup::{self, Popup};
@@ -35,7 +33,7 @@ pub(crate) fn show(text: &str, at: RECT, owner: Option<HWND>) {
             top,
             width,
             height,
-            SWP_NOACTIVATE | SWP_SHOWWINDOW,
+            (SWP_NOACTIVATE | SWP_SHOWWINDOW) as u32,
         );
         let _ = InvalidateRect(Some(window), None, true);
     }
@@ -76,12 +74,12 @@ fn create(owner: Option<HWND>) -> Result<HWND> {
     };
     // A second registration in the same process fails harmlessly.
     unsafe { RegisterClassW(&class) };
-    unsafe {
+    let window = unsafe {
         CreateWindowExW(
-            WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT,
+            (WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_TRANSPARENT) as u32,
             CLASS,
             PCWSTR::null(),
-            WS_POPUP | WS_BORDER,
+            WS_POPUP | WS_BORDER as u32,
             0,
             0,
             0,
@@ -91,12 +89,16 @@ fn create(owner: Option<HWND>) -> Result<HWND> {
             Some(instance),
             None,
         )
+    };
+    if window.0.is_null() {
+        return Err(Error::from_thread());
     }
+    Ok(window)
 }
 
 fn size(window: HWND) -> (i32, i32) {
     let dc = unsafe { GetDC(Some(window)) };
-    let previous = unsafe { SelectObject(dc, crate::candidates::font().into()) };
+    let previous = unsafe { SelectObject(dc, HGDIOBJ(crate::candidates::font().0)) };
     let mut size = SIZE::default();
     SHOWN.with_borrow(|text| unsafe {
         let _ = GetTextExtentPoint32W(dc, text, &mut size);
@@ -112,7 +114,7 @@ fn size(window: HWND) -> (i32, i32) {
 fn paint(window: HWND) {
     let mut ps = PAINTSTRUCT::default();
     let dc = unsafe { BeginPaint(window, &mut ps) };
-    let previous = unsafe { SelectObject(dc, crate::candidates::font().into()) };
+    let previous = unsafe { SelectObject(dc, HGDIOBJ(crate::candidates::font().0)) };
     let mut client = RECT::default();
     unsafe {
         let _ = GetClientRect(window, &mut client);
@@ -120,13 +122,14 @@ fn paint(window: HWND) {
         SetBkMode(dc, TRANSPARENT);
         SetTextColor(dc, COLORREF(GetSysColor(COLOR_WINDOWTEXT)));
     }
-    let mut text = SHOWN.with_borrow(Vec::clone);
+    let text = SHOWN.with_borrow(Vec::clone);
     unsafe {
         DrawTextW(
             dc,
-            &mut text,
+            PCWSTR(text.as_ptr()),
+            text.len() as i32,
             &mut client,
-            DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX,
+            (DT_CENTER | DT_VCENTER | DT_SINGLELINE | DT_NOPREFIX) as u32,
         );
         SelectObject(dc, previous);
         let _ = EndPaint(window, &ps);
@@ -139,7 +142,7 @@ extern "system" fn procedure(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
-    match message {
+    match message as i32 {
         WM_PAINT => {
             // A panic must not unwind into the application's message loop.
             let _ = std::panic::catch_unwind(|| paint(window));

@@ -12,17 +12,13 @@ use std::io::{self, Write};
 use std::os::windows::fs::OpenOptionsExt;
 use std::os::windows::io::AsRawHandle;
 
+use crate::bindings::{
+    ConvertSidToStringSidW, ERROR_PIPE_BUSY, GetSecurityInfo, GetTokenInformation, HANDLE,
+    LocalFree, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, SE_KERNEL_OBJECT,
+    SECURITY_INFORMATION, TOKEN_USER, TokenIsAppContainer, TokenUser, WaitNamedPipeW,
+};
 use kanaemi_engine::LineSink;
-use windows::Win32::Foundation::{ERROR_PIPE_BUSY, HANDLE, HLOCAL, LocalFree};
-use windows::Win32::Security::Authorization::{
-    ConvertSidToStringSidW, GetSecurityInfo, SE_KERNEL_OBJECT,
-};
-use windows::Win32::Security::{
-    GetTokenInformation, OWNER_SECURITY_INFORMATION, PSECURITY_DESCRIPTOR, PSID, TOKEN_USER,
-    TokenIsAppContainer, TokenUser,
-};
-use windows::Win32::System::Pipes::WaitNamedPipeW;
-use windows::core::{HSTRING, PWSTR};
+use windows_core::{HSTRING, PWSTR};
 
 /// How long a client waits for a server busy with another.
 const BUSY_WAIT_MS: u32 = 200;
@@ -73,6 +69,7 @@ pub fn user_sid() -> io::Result<String> {
             &mut len,
         )
     }
+    .ok()
     .map_err(io::Error::other)?;
     let user = unsafe { &*buffer.as_ptr().cast::<TOKEN_USER>() };
     sid_string(user.User.Sid)
@@ -80,10 +77,12 @@ pub fn user_sid() -> io::Result<String> {
 
 fn sid_string(sid: PSID) -> io::Result<String> {
     let mut text = PWSTR::null();
-    unsafe { ConvertSidToStringSidW(sid, &mut text) }.map_err(io::Error::other)?;
+    unsafe { ConvertSidToStringSidW(sid, &mut text) }
+        .ok()
+        .map_err(io::Error::other)?;
     let sid = unsafe { text.to_string() }.map_err(io::Error::other);
     unsafe {
-        let _ = LocalFree(Some(HLOCAL(text.0.cast())));
+        let _ = LocalFree(HANDLE(text.0.cast()));
     }
     sid
 }
@@ -96,7 +95,7 @@ pub(crate) fn made_by_user(pipe: &std::fs::File) -> io::Result<bool> {
         GetSecurityInfo(
             HANDLE(pipe.as_raw_handle()),
             SE_KERNEL_OBJECT,
-            OWNER_SECURITY_INFORMATION,
+            SECURITY_INFORMATION(OWNER_SECURITY_INFORMATION as u32),
             Some(&mut owner),
             None,
             None,
@@ -104,11 +103,13 @@ pub(crate) fn made_by_user(pipe: &std::fs::File) -> io::Result<bool> {
             Some(&mut descriptor),
         )
     };
-    asked.ok().map_err(io::Error::other)?;
+    if asked != 0 {
+        return Err(io::Error::from_raw_os_error(asked as i32));
+    }
     let made = sid_string(owner)
         .map(|owner| owner == user_sid().unwrap_or_default() || owner == ADMINISTRATORS);
     unsafe {
-        let _ = LocalFree(Some(HLOCAL(descriptor.0)));
+        let _ = LocalFree(HANDLE(descriptor.0));
     }
     made
 }
@@ -126,7 +127,7 @@ pub fn in_app_container() -> bool {
             &mut len,
         )
     };
-    asked.is_ok() && is != 0
+    asked.as_bool() && is != 0
 }
 
 /// Sends each line to the server.
@@ -147,7 +148,7 @@ impl LineSink for PipeSink {
         let mut pipe = match open() {
             // The server is reading another client: wait a moment, not more,
             // as typing waits too.
-            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY.0 as i32) => {
+            Err(error) if error.raw_os_error() == Some(ERROR_PIPE_BUSY) => {
                 let _ = unsafe { WaitNamedPipeW(&HSTRING::from(name.as_str()), BUSY_WAIT_MS) };
                 open()?
             }

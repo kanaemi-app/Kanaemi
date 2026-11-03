@@ -33,17 +33,13 @@ mod server {
     use std::process::Command;
     use std::time::{Duration, Instant};
 
+    use kanaemi::bindings::*;
     use kanaemi::pipe::{self, MAX_LINE};
     use kanaemi_config::{
         DICTIONARY_DIR, FILE_NAME, FUNCTIONS_DIR, Files, MODEL_FILE, ROMAJI_DIR, Settings,
     };
     use kanaemi_engine::{FileSink, LineSink, TextDictionary};
-    use windows::Win32::Foundation::*;
-    use windows::Win32::Security::Authorization::*;
-    use windows::Win32::Security::*;
-    use windows::Win32::Storage::FileSystem::*;
-    use windows::Win32::System::Pipes::*;
-    use windows::core::*;
+    use windows_core::*;
 
     /// All application packages, and the less privileged ones the Start
     /// menu's search box runs as.
@@ -84,7 +80,7 @@ mod server {
         };
         match serve(&name, &dir, serving) {
             // Another server of this user already answers.
-            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED.0 as i32) => {
+            Err(error) if error.raw_os_error() == Some(ERROR_ACCESS_DENIED) => {
                 tracing::info!("another server is running");
             }
             Err(error) => tracing::warn!(%error, "pipe not served"),
@@ -106,16 +102,16 @@ mod server {
         let handle = unsafe {
             CreateFileW(
                 PCWSTR(wide.as_ptr()),
-                FILE_LIST_DIRECTORY.0,
-                FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+                FILE_LIST_DIRECTORY as u32,
+                (FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE) as u32,
                 None,
-                OPEN_EXISTING,
-                FILE_FLAG_BACKUP_SEMANTICS,
+                OPEN_EXISTING as u32,
+                FILE_FLAG_BACKUP_SEMANTICS as u32,
                 None,
             )
         };
         grant_reads(dir);
-        let Ok(handle) = handle else {
+        if handle == INVALID_HANDLE_VALUE {
             tracing::warn!(path = %dir.display(), "settings folder not watched");
             return;
         };
@@ -130,13 +126,13 @@ mod server {
                     // Files moved into the dictionary and romaji folders keep the
                     // access they had, so those folders are watched too.
                     true,
-                    FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME,
+                    (FILE_NOTIFY_CHANGE_FILE_NAME | FILE_NOTIFY_CHANGE_DIR_NAME) as u32,
                     Some(&mut len),
                     None,
                     None,
                 )
             };
-            if let Err(error) = changed {
+            if let Err(error) = changed.ok() {
                 tracing::warn!(%error, "settings folder no longer watched");
                 return;
             }
@@ -192,16 +188,17 @@ mod server {
         unsafe {
             ConvertStringSecurityDescriptorToSecurityDescriptorW(
                 &sddl,
-                SDDL_REVISION_1,
+                SDDL_REVISION_1 as u32,
                 &mut descriptor,
                 None,
             )
         }
+        .ok()
         .map_err(io::Error::other)?;
         Ok(SECURITY_ATTRIBUTES {
             nLength: std::mem::size_of::<SECURITY_ATTRIBUTES>() as u32,
             lpSecurityDescriptor: descriptor.0,
-            bInheritHandle: FALSE,
+            bInheritHandle: false.into(),
         })
     }
 
@@ -211,24 +208,25 @@ mod server {
         let attributes = pipe_security(pipe::CLIENT_ACCESS)?;
         let name = HSTRING::from(name);
         let instance = |first: bool| {
-            let mut mode = PIPE_ACCESS_INBOUND;
+            let mut mode = PIPE_ACCESS_INBOUND as u32;
             if first {
                 // Fails when another server already made the pipe.
-                mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+                mode |= FILE_FLAG_FIRST_PIPE_INSTANCE as u32;
             }
             let pipe = unsafe {
                 CreateNamedPipeW(
                     &name,
                     mode,
-                    PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS,
-                    PIPE_UNLIMITED_INSTANCES,
+                    (PIPE_TYPE_BYTE | PIPE_READMODE_BYTE | PIPE_WAIT | PIPE_REJECT_REMOTE_CLIENTS)
+                        as u32,
+                    PIPE_UNLIMITED_INSTANCES as u32,
                     0,
                     MAX_LINE as u32,
                     0,
                     Some(&attributes),
                 )
             };
-            if pipe.is_invalid() {
+            if pipe == INVALID_HANDLE_VALUE {
                 return Err(io::Error::last_os_error());
             }
             Ok(pipe)
@@ -248,7 +246,7 @@ mod server {
             let pipe = next;
             let connected = unsafe { ConnectNamedPipe(pipe, None) };
             // A client may connect between the pipe's creation and the call.
-            if connected.is_err() && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED {
+            if !connected.as_bool() && unsafe { GetLastError() } != ERROR_PIPE_CONNECTED as u32 {
                 unsafe {
                     let _ = CloseHandle(pipe);
                 }
@@ -277,7 +275,8 @@ mod server {
         while bytes.len() <= MAX_LINE && !bytes.contains(&b'\n') && Instant::now() < deadline {
             let mut available = 0u32;
             // Fails once the client has closed and nothing is left to read.
-            if unsafe { PeekNamedPipe(pipe, None, 0, None, Some(&mut available), None) }.is_err() {
+            if !unsafe { PeekNamedPipe(pipe, None, 0, None, Some(&mut available), None) }.as_bool()
+            {
                 break;
             }
             if available == 0 {
@@ -287,7 +286,16 @@ mod server {
             let want = (available as usize).min(MAX_LINE + 1 - bytes.len());
             let mut chunk = vec![0u8; want];
             let mut read = 0u32;
-            if unsafe { ReadFile(pipe, Some(&mut chunk), Some(&mut read), None) }.is_err() {
+            let read_ok = unsafe {
+                ReadFile(
+                    pipe,
+                    Some(chunk.as_mut_ptr().cast()),
+                    chunk.len() as u32,
+                    Some(&mut read),
+                    None,
+                )
+            };
+            if !read_ok.as_bool() {
                 break;
             }
             bytes.extend_from_slice(&chunk[..read as usize]);
@@ -380,19 +388,14 @@ mod server {
         use std::sync::mpsc::{self, Receiver, RecvTimeoutError, SyncSender};
         use std::time::{Duration, Instant};
 
+        use kanaemi::bindings::*;
         use kanaemi::control::{ANSWER_WITHIN, Desk, MAX_LINE, Report, Step};
         use kanaemi::link::{self, Outbox};
         use kanaemi::pipe;
         use kanaemi_config::{FILE_NAME, Settings};
         use kanaemi_engine::FileStamp;
         use kanaemi_runtime::{ControlPort, ControlRequest};
-        use windows::Win32::Foundation::*;
-        use windows::Win32::Storage::FileSystem::*;
-        use windows::Win32::System::IO::*;
-        use windows::Win32::System::Pipes::*;
-        use windows::Win32::System::SystemInformation::GetTickCount64;
-        use windows::Win32::System::Threading::CreateEventW;
-        use windows::core::*;
+        use windows_core::*;
 
         /// How often the settings are looked at for the port they name.
         const SETTINGS_POLL: Duration = Duration::from_secs(1);
@@ -569,27 +572,27 @@ mod server {
             let attributes = super::pipe_security(pipe::CONTROL_CLIENT_ACCESS)?;
             let name = HSTRING::from(pipe::control_name()?);
             let instance = |first: bool| {
-                let mut mode = PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED;
+                let mut mode = (PIPE_ACCESS_DUPLEX | FILE_FLAG_OVERLAPPED) as u32;
                 if first {
                     // Fails when another program already made the pipe.
-                    mode |= FILE_FLAG_FIRST_PIPE_INSTANCE;
+                    mode |= FILE_FLAG_FIRST_PIPE_INSTANCE as u32;
                 }
                 let pipe = unsafe {
                     CreateNamedPipeW(
                         &name,
                         mode,
-                        PIPE_TYPE_BYTE
+                        (PIPE_TYPE_BYTE
                             | PIPE_READMODE_BYTE
                             | PIPE_WAIT
-                            | PIPE_REJECT_REMOTE_CLIENTS,
-                        PIPE_UNLIMITED_INSTANCES,
+                            | PIPE_REJECT_REMOTE_CLIENTS) as u32,
+                        PIPE_UNLIMITED_INSTANCES as u32,
                         MAX_LINE as u32,
                         MAX_LINE as u32,
                         0,
                         Some(&attributes),
                     )
                 };
-                if pipe.is_invalid() {
+                if pipe == INVALID_HANDLE_VALUE {
                     return Err(io::Error::last_os_error());
                 }
                 Ok(unsafe { File::from_raw_handle(pipe.0) })
@@ -622,15 +625,17 @@ mod server {
                 hEvent: HANDLE(connected.as_raw_handle()),
                 ..Default::default()
             };
-            match unsafe { ConnectNamedPipe(pipe, Some(&mut overlapped)) } {
-                Ok(()) => true,
+            if unsafe { ConnectNamedPipe(pipe, Some(&mut overlapped)) }.as_bool() {
+                return true;
+            }
+            match io::Error::last_os_error().raw_os_error() {
                 // A client may connect between the pipe's creation and the
                 // call.
-                Err(error) if error.code() == ERROR_PIPE_CONNECTED.to_hresult() => true,
-                Err(error) if error.code() == ERROR_IO_PENDING.to_hresult() => {
-                    unsafe { GetOverlappedResult(pipe, &overlapped, &mut 0, true) }.is_ok()
+                Some(ERROR_PIPE_CONNECTED) => true,
+                Some(ERROR_IO_PENDING) => {
+                    unsafe { GetOverlappedResult(pipe, &overlapped, &mut 0, true) }.as_bool()
                 }
-                Err(_) => false,
+                _ => false,
             }
         }
 
@@ -672,7 +677,10 @@ mod server {
         }
 
         fn event() -> io::Result<OwnedHandle> {
-            let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) }?;
+            let event = unsafe { CreateEventW(None, true, false, PCWSTR::null()) };
+            if event.0.is_null() {
+                return Err(io::Error::last_os_error());
+            }
             Ok(unsafe { OwnedHandle::from_raw_handle(event.0) })
         }
     }
