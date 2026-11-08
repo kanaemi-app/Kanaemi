@@ -587,6 +587,8 @@ table.rules th { text-align: left; font-weight: 500; font-size: 13px; color: var
 table.rules td { padding: 6px 8px; border-top: 1px solid var(--separator); }
 table.rules.words td { vertical-align: middle; }
 table.rules.words td.word-actions { text-align: right; white-space: nowrap; width: 1%; }
+/* A word broken across lines reads as two words; the dictionary column wraps instead. */
+table.rules.words td.word-text, table.rules.words .offer-place { white-space: nowrap; }
 table.rules.words td.word-actions button + button { margin-left: 6px; }
 /* The backdrop covers the window, not the column the pages are set in. */
 .content > .modal-backdrop { max-width: none; margin: 0; }

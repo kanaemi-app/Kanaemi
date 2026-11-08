@@ -55,6 +55,10 @@ pub fn Dictionaries() -> Element {
         }
     }
     let chosen_for_official = chosen.clone();
+    let labels: Vec<(String, String)> = items
+        .iter()
+        .map(|item| (item.name.clone(), item.label.clone()))
+        .collect();
     let mut looking = use_signal(|| None::<String>);
     let looked = looking().map(|name| {
         let builtin = name
@@ -115,6 +119,7 @@ pub fn Dictionaries() -> Element {
                 UserWords {
                     custom: custom_path.clone(),
                     functions: store_dir.join(FUNCTIONS_DIR),
+                    labels: labels.clone(),
                     on_close: move |_| looking.set(None),
                 }
             },
@@ -389,7 +394,7 @@ fn written_dictionaries(ctx: Ctx) -> Option<Vec<String>> {
 
 /// Runs `work` off the window's thread, so the window keeps answering while
 /// it waits on the network.
-async fn in_background<T: Send + 'static>(
+pub(super) async fn in_background<T: Send + 'static>(
     work: impl FnOnce() -> Result<T, String> + Send + 'static,
 ) -> Result<T, String> {
     let (sender, receiver) = futures_channel::oneshot::channel();
