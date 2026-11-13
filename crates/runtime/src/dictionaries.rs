@@ -670,4 +670,22 @@ mod tests {
             kanaemi_config::description(date.text)
         );
     }
+
+    #[test]
+    fn the_built_in_number_dictionary_writes_a_number_alone_in_each_notation() {
+        let dir = temp_dir("builtin-number");
+        let listed = [DictionarySource::Builtin("number".to_owned())];
+        let mut engine = open_engine(
+            &dir,
+            Some(&listed),
+            &dir.join(USER_CUSTOM_FILE),
+            Access::Full,
+        );
+        engine.set_functions(Some(crate::functions::open(&dir, &[])));
+        let mut found = surfaces(&engine, "１２");
+        found.sort();
+        let mut expected = ["１２", "12", "十二", "一二", "壱拾弐"].map(str::to_owned);
+        expected.sort();
+        assert_eq!(found, expected);
+    }
 }

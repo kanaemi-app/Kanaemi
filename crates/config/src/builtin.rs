@@ -27,6 +27,10 @@ pub const BUILTIN_DICTIONARIES: &[BuiltinDictionary] = &[
         text: include_str!("../assets/dictionaries/year.tsv"),
     },
     BuiltinDictionary {
+        name: "number",
+        text: include_str!("../assets/dictionaries/number.tsv"),
+    },
+    BuiltinDictionary {
         name: "random",
         text: include_str!("../assets/dictionaries/random.tsv"),
     },
