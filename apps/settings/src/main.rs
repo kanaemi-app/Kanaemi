@@ -31,6 +31,7 @@ mod intents;
 mod keys;
 mod logs;
 mod messages;
+mod offered;
 mod official;
 mod pages;
 mod registration;
