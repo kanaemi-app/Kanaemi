@@ -1,0 +1,8 @@
+# 数：数だけの読みを、漢数字・全角・半角・大字で書く
+{}	{kanji}
+{}	{}
+{}	{half-num}
+{}	{wide-num}
+{}	{grouped-num}
+{}	{kanji-num}
+{}	{daiji}
