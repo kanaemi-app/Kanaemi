@@ -113,7 +113,9 @@ pub enum DropReason {
     NotConjugated,
     /// It does not end with the okurigana typed.
     OkuriganaMismatch,
-    /// An earlier dictionary in the list gave the same surface.
+    /// Another dictionary in the list gave the same surface: an earlier one,
+    /// or a later one by an item that takes no kana number where this one
+    /// was filled from a kana number.
     Shadowed {
         /// The place of that dictionary in the list.
         by: usize,
@@ -222,6 +224,22 @@ impl Trace {
             origins.insert(0, taken);
         }
         self.notes.entry(surface.to_owned()).or_default().origins = origins;
+    }
+
+    /// Leaves out what an earlier dictionary gave the candidate `surface` by,
+    /// as the dictionary at `by` gives it now.
+    pub(crate) fn taken_over(&mut self, surface: &str, by: usize) {
+        let origins = self
+            .notes
+            .get_mut(surface)
+            .map(|notes| std::mem::take(&mut notes.origins))
+            .unwrap_or_default();
+        self.dropped
+            .extend(origins.into_iter().map(|origin| Dropped {
+                surface: Some(surface.to_owned()),
+                origin,
+                reason: DropReason::Shadowed { by },
+            }));
     }
 
     /// Leaves out every item the dictionary gave `surface` by.

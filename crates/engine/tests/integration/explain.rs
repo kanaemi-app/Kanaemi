@@ -1,7 +1,7 @@
 use kanaemi_core::Converter;
 use kanaemi_engine::{
     DropReason, Dropped, Engine, Explanation, Lookup, LookupKey, OkuriHead, Origin, OriginItem,
-    RuleGroup, Score, Selections, Slot, TextDictionary, show_placeholders,
+    RuleGroup, Score, Selections, Slot, TextDictionary, mark_placeholders, show_placeholders,
 };
 use proptest::prelude::*;
 
@@ -44,6 +44,13 @@ fn word(reading: &str, surface: &str) -> OriginItem {
     OriginItem::Word {
         reading: reading.into(),
         surface: surface.into(),
+    }
+}
+
+fn placeholders(reading: &str, surface: &str) -> OriginItem {
+    OriginItem::Placeholders {
+        reading: mark_placeholders(reading).unwrap(),
+        surface: mark_placeholders(surface).unwrap(),
     }
 }
 
@@ -179,6 +186,56 @@ fn a_split_at_the_mark_is_taken_over_a_cheaper_word_of_the_whole_reading() {
         ]
     );
     assert_eq!(candidate.facts.cost, 5);
+}
+
+#[test]
+fn a_word_is_taken_over_a_cheaper_kana_numeric_item_of_its_surface() {
+    let mut e = engine(
+        vec![
+            Slot::UserCustom,
+            text("いっぽん\t一本\t\t5\n{kana}ぽん\t{kanji}本\t\t1"),
+        ],
+        "",
+    );
+    e.set_functions(Notations::shared());
+    let explanation = e.explain("いっぽん", None);
+    let candidate = explained(&explanation, "一本");
+    assert_eq!(
+        candidate.origins,
+        [
+            origin(1, 5, word("いっぽん", "一本")),
+            origin(1, 1, placeholders("{kana}ぽん", "{kanji}本")),
+        ]
+    );
+    assert_eq!(
+        (candidate.facts.cost, candidate.facts.template.as_ref()),
+        (5, None)
+    );
+}
+
+#[test]
+fn a_kana_numeric_candidate_of_an_earlier_dictionary_is_shadowed_by_a_later_word() {
+    let mut e = engine(
+        vec![
+            Slot::UserCustom,
+            text("{kana}かく\t{kanji}角\t\t1"),
+            text("さんかく\t三角\t\t5"),
+        ],
+        "",
+    );
+    e.set_functions(Notations::shared());
+    let explanation = e.explain("さんかく", None);
+    let candidate = explained(&explanation, "三角");
+    assert_eq!(candidate.origins, [origin(2, 5, word("さんかく", "三角"))]);
+    assert_eq!(candidate.facts.dictionary, 2);
+    assert_eq!(
+        explanation.dropped,
+        [Dropped {
+            surface: Some("三角".into()),
+            origin: origin(1, 1, placeholders("{kana}かく", "{kanji}角")),
+            reason: DropReason::Shadowed { by: 2 },
+        }]
+    );
 }
 
 #[test]

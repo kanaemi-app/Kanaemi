@@ -139,6 +139,35 @@ fn a_candidate_from_a_kana_number_comes_after_the_other_candidates_of_its_readin
 }
 
 #[test]
+fn a_word_makes_its_surface_over_a_cheaper_kana_numeric_item() {
+    let (e, _) = engine(
+        "いっぽん\t一本\t\t997\n\
+         いっぽん\tイッポン\t\t1518\n\
+         {kana}ぽん\t{kanji}本\t\t962\n\
+         {kana}ぽん\t{}本\t\t873",
+        "",
+    );
+    assert_eq!(surfaces(&e, "いっぽん"), ["一本", "イッポン", "1本"]);
+}
+
+#[test]
+fn a_word_of_a_later_dictionary_makes_a_surface_an_earlier_one_fills_from_a_kana_number() {
+    let (e, _) = engine(
+        "さんかく\t三角\t\t100\nさんかく\t参画\t\t200",
+        "{kana}かく\t{kanji}角",
+    );
+    assert_eq!(surfaces(&e, "さんかく"), ["三角", "参画"]);
+}
+
+#[test]
+fn a_surface_a_word_also_makes_is_recorded_as_the_word() {
+    let (mut e, _) = engine("いっぽん\t一本\t\t100\n{kana}ぽん\t{kanji}本\t\t1", "");
+    e.commit("いっぽん", "一本");
+    let text = e.take_selections().unwrap().to_text();
+    assert!(text.contains("\nいっぽん\t一本\t"), "{text}");
+}
+
+#[test]
 fn a_candidate_from_digits_keeps_the_place_its_dictionary_gives_it() {
     let (e, _) = engine("５かく\t五画", "{}かく\t{kanji}角");
     assert_eq!(surfaces(&e, "５かく"), ["五角", "五画"]);
