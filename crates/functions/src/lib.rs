@@ -21,7 +21,7 @@ pub const EXTENSION: &str = "luau";
 /// The functions the IME has, and the modules they require, by their path:
 /// written as files of the functions folder would be, so they work copied
 /// there too. A file at the top gives a function of its name.
-const BUILTINS: [(&str, &str); 16] = [
+const BUILTINS: [(&str, &str); 17] = [
     (
         "wareki.luau",
         include_str!("../assets/functions/wareki.luau"),
@@ -64,6 +64,7 @@ const BUILTINS: [(&str, &str); 16] = [
         "grouped-num.luau",
         include_str!("../assets/functions/grouped-num.luau"),
     ),
+    ("num.luau", include_str!("../assets/functions/num.luau")),
     (
         "lib/number.luau",
         include_str!("../assets/functions/lib/number.luau"),
