@@ -1,6 +1,6 @@
 # 関数
 
-[表記の置き場所](placeholder.md) を埋める関数。関数は変換元（文字列）と引数（文字列か、なし）を受け取り、置き場所を埋める文字列を返す。
+[表記の置き場所](placeholder.md) を埋める関数。関数は変換元（文字列）と引数（文字列か、なし）を受け取り、置き場所を埋める文字列か、文字列のリストを返す。
 
 IME は [数の書き方](numeric-conversion.md#数値の項目) の関数を、組み込みの関数として Luau で持つ。利用者も Luau で関数を足せる。
 
@@ -31,7 +31,20 @@ return function(source, arg)
 end
 ```
 
+```luau
+-- functions/dates.luau：今日の日付を、引数の書式のそれぞれで書く（引数がなければ 3 つ）
+return function(source, arg)
+  local formats = arg and { arg } or { "%Y-%m-%d", "%Y/%m/%d", "%Y年%m月%d日" }
+  local values = {}
+  for _, format in formats do
+    table.insert(values, { text = os.date(format), argument = format })
+  end
+  return values
+end
+```
+
 - 関数は変換元（文字列）と引数（文字列か `nil`）を受け取り、置き場所を埋める文字列を返す。`nil` を返すと、その項目から候補を作らない。
+- 値のリスト（Luau の配列）を返すと、値ごとに候補を作る（[埋め方](placeholder.md#埋め方)）。値は、文字列か、`text`（文字列）と `argument`（文字列）を持つテーブル。`argument` は、その値だけを返す引数で、その値の [記録](placeholder.md#記録) が付く項目を決める。ほかの形の値を含むリストと空のリストは、`nil` と同じ。
 - IME が持つ関数と同じ名前のファイルがあれば、そのファイルの関数を使う。
 - [設定](settings.md#関数) で使わないとしたファイルの関数は、使わない。同じ名前の組み込みの関数があれば、それを使う。ほかの関数が `require` するモジュールとしては読む。
 - 関数を返さないファイルと、`functions/` の中のフォルダにあるファイルは、関数ではなくモジュール。
