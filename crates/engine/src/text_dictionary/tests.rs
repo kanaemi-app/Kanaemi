@@ -513,6 +513,29 @@ fn a_numeric_line_reads_back_as_it_was_written() {
     );
 }
 
+#[test]
+fn a_line_with_a_kana_placeholder_reads_back_as_it_was_written() {
+    let reading = format!("{}だんかい", placeholder("kana"));
+    let surface = format!("{}段階", placeholder("kanji"));
+    let line = ItemLine {
+        reading: &reading,
+        surface: &surface,
+        ..ItemLine::default()
+    };
+    assert_eq!(line.to_string(), "{kana}だんかい\t{kanji}段階");
+    assert_eq!(
+        parse(&line.to_string()).words(&reading),
+        [entry(&surface, 0)]
+    );
+}
+
+#[test]
+fn a_reading_placeholder_names_only_what_it_takes() {
+    for line in ["{kanji}こ\t{}個", "{kana\t{}個", "{ kana}こ\t{}個"] {
+        assert_eq!(TextDictionary::parse(line).1.len(), 1, "{line}");
+    }
+}
+
 // Robustness: whatever the text, reading it never panics and every line it
 // could not read is told.
 

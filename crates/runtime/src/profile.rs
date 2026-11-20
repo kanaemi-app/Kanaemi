@@ -537,6 +537,59 @@ mod tests {
     }
 
     #[test]
+    fn a_kana_number_is_written_in_each_way_num_gives() {
+        let dir = temp_dir("kana-num");
+        fs::write(
+            dir.join(DICTIONARY_DIR).join("words.tsv"),
+            "{kana}だんかい\t{num}段階\n",
+        )
+        .unwrap();
+        let profile = Profile::open(&dir);
+        assert_eq!(
+            surfaces(&profile, "さんだんかい"),
+            ["3段階", "３段階", "三段階"]
+        );
+        assert_eq!(
+            surfaces(&profile, "じゅうにだんかい"),
+            ["12段階", "１２段階", "十二段階"]
+        );
+    }
+
+    #[test]
+    fn a_kana_number_whose_last_sound_doubles_is_written_in_each_way_num_gives() {
+        let dir = temp_dir("kana-num-doubled");
+        fs::write(
+            dir.join(DICTIONARY_DIR).join("words.tsv"),
+            "{kana}しゅるい\t{num}種類\n",
+        )
+        .unwrap();
+        let profile = Profile::open(&dir);
+        assert_eq!(
+            surfaces(&profile, "いっしゅるい"),
+            ["1種類", "１種類", "一種類"]
+        );
+        assert_eq!(
+            surfaces(&profile, "ろっぴゃくしゅるい"),
+            ["600種類", "６００種類", "六百種類"]
+        );
+    }
+
+    #[test]
+    fn a_placeholder_registered_for_a_kana_number_takes_every_kana_number() {
+        let dir = temp_dir("kana-register");
+        let mut profile = Profile::open(&dir);
+        profile.learn(&[Effect::Registered {
+            reading: "さんだんかい".to_owned(),
+            okurigana: None,
+            okurigana_head: None,
+            surface: "{kanji}段階".to_owned(),
+        }]);
+        let custom = fs::read_to_string(dir.join(USER_CUSTOM_FILE)).unwrap();
+        assert_eq!(custom, "{kana}だんかい\t{kanji}段階\n");
+        assert_eq!(surfaces(&profile, "ごだんかい"), ["五段階"]);
+    }
+
+    #[test]
     fn a_function_in_the_settings_folder_fills_a_placeholder() {
         let dir = with_function("function", "return function(s) return '<' .. s .. '>' end");
         assert_eq!(surfaces(&Profile::open(&dir), "よみ"), ["<よみ>"]);

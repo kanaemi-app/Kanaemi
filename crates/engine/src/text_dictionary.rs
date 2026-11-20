@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use unicode_normalization::UnicodeNormalization;
 
+use crate::numeric::KANA;
 use crate::placeholder::{CLOSE, OPEN, Placeholder, fits};
 use crate::{ConjugationTable, Dictionary, Entry, OkuriHead};
 
@@ -641,15 +642,31 @@ pub(crate) fn unescape_literal_reading(field: &str) -> Result<String, InvalidRea
 }
 
 /// Pushes a reading's unescaped `c`, reading on past the `}` a placeholder
-/// needs. A reading's placeholder names no notation: the surface does.
+/// needs. A reading's placeholder names what it takes as a number, never a
+/// function: the surface does that.
 fn push_reading_char(
     out: &mut String,
     c: char,
     rest: &mut impl Iterator<Item = char>,
 ) -> Result<(), InvalidReason> {
     match c {
-        '{' if rest.next() == Some('}') => out.extend([OPEN, CLOSE]),
-        '{' | OPEN | CLOSE => return Err(InvalidReason::Placeholder),
+        '{' => {
+            let mut name = String::new();
+            loop {
+                match rest.next() {
+                    Some('}') => break,
+                    Some(c) => name.push(c),
+                    None => return Err(InvalidReason::Placeholder),
+                }
+            }
+            if !matches!(name.as_str(), "" | KANA) {
+                return Err(InvalidReason::Placeholder);
+            }
+            out.push(OPEN);
+            out.push_str(&name);
+            out.push(CLOSE);
+        }
+        OPEN | CLOSE => return Err(InvalidReason::Placeholder),
         c => out.push(c),
     }
     Ok(())

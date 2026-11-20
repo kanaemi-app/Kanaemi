@@ -8,12 +8,17 @@ use std::path::Path;
 
 use crate::OkuriHead;
 use crate::TextDictionary;
+use crate::numeric::KANA;
 use crate::okuri::okuri_row;
-use crate::placeholder::{CLOSE, OPEN, fits, placeholders};
+use crate::placeholder::{CLOSE, Functions, OPEN, fill_all, fits, placeholders};
+use crate::registration::numbered;
 use crate::text_dictionary::{ItemLine, mark_placeholders, nfc, show_placeholders};
 use crate::user_custom::{
     FileLock, append_line, lines, open_private, read_if_exists, remove_lines, rewrite,
 };
+
+/// The numbers a word with numbers is shown with before it is added.
+const SAMPLE_NUMBERS: [&str; 3] = ["1", "3", "12"];
 
 /// A word of a user custom dictionary without a conjugation type or a cost,
 /// its okurigana marked by a kana: what registering a word writes.
@@ -159,6 +164,40 @@ impl UserWord {
         show_placeholders(&self.surface)
     }
 
+    /// This word, which has no placeholders, with each number of its reading
+    /// made a placeholder, when its surface writes every one (さんだんかい
+    /// 三段階 → {kana}だんかい {kanji}段階), for a person to add in its
+    /// place. `None` when there is no such word.
+    pub fn numbered(&self, functions: &dyn Functions) -> Option<Self> {
+        if self.okurigana.is_some() || self.stem.contains(OPEN) || self.surface.contains(OPEN) {
+            return None;
+        }
+        let registration = numbered(&self.stem, &self.surface, functions)?;
+        let word = Self {
+            stem: registration.reading,
+            okurigana: None,
+            surface: registration.surface,
+        };
+        word.is(&word.line()).then_some(word)
+    }
+
+    /// What a word with numbers gives for a few numbers, each value of each
+    /// in turn; none for a word without numbers.
+    pub fn samples(&self, functions: &dyn Functions) -> Vec<String> {
+        let numbers = self.stem.matches(OPEN).count();
+        if numbers == 0 {
+            return Vec::new();
+        }
+        SAMPLE_NUMBERS
+            .iter()
+            .flat_map(|sample| {
+                let values = vec![(*sample).to_owned(); numbers];
+                fill_all(&self.surface, &values, &self.stem, Some(functions))
+            })
+            .map(|filled| filled.text)
+            .collect()
+    }
+
     /// The line of a user custom dictionary that registers the word.
     fn line(&self) -> String {
         let okurigana = self.okurigana.map(String::from);
@@ -193,19 +232,27 @@ impl UserWord {
     }
 }
 
-/// The reading before the okurigana, with each `{}` made a number's
-/// placeholder, and how many numbers it has.
+/// The reading before the okurigana, with each `{}` and `{kana}` made a
+/// number's placeholder, and how many numbers it has.
 fn stem_of(written: &str) -> Result<(String, usize), WordError> {
     let mut stem = String::new();
     let mut numbers = 0;
-    let mut chars = written.chars();
-    while let Some(c) = chars.next() {
+    let mut rest = written;
+    while let Some(c) = rest.chars().next() {
+        rest = &rest[c.len_utf8()..];
         match c {
-            '{' if chars.next() == Some('}') => {
-                stem.extend([OPEN, CLOSE]);
+            '{' => {
+                let (name, after) = rest.split_once('}').ok_or(WordError::Brace)?;
+                if !matches!(name, "" | KANA) {
+                    return Err(WordError::Brace);
+                }
+                stem.push(OPEN);
+                stem.push_str(name);
+                stem.push(CLOSE);
                 numbers += 1;
+                rest = after;
             }
-            '{' | '}' => return Err(WordError::Brace),
+            '}' => return Err(WordError::Brace),
             c if is_reading_kana(c) => stem.push(c),
             c => return Err(WordError::NotKana(c)),
         }
@@ -322,6 +369,7 @@ fn with_text(raw: &[u8], text: &str, new: &str) -> Vec<u8> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::placeholder::{Call, Value};
 
     fn word(reading: &str, surface: &str) -> Result<UserWord, WordError> {
         UserWord::new(reading, surface, |name| name == "kanji")
@@ -357,6 +405,73 @@ mod tests {
         let written = word("{}こ", "{kanji}個").unwrap();
         assert_eq!(written.reading(), "{}こ");
         assert_eq!(written.surface(), "{kanji}個");
+    }
+
+    #[test]
+    fn a_reading_may_take_a_number_typed_in_kana() {
+        assert_eq!(
+            line("{kana}だんかい", "{kanji}段階"),
+            "{kana}だんかい\t{kanji}段階"
+        );
+        assert!(matches!(word("{x}こ", "{kanji}個"), Err(WordError::Brace)));
+    }
+
+    /// `kanji` writes 1 to 19 in kanji; `half-num` gives its source.
+    struct Kanji;
+
+    impl Functions for Kanji {
+        fn has(&self, name: &str) -> bool {
+            matches!(name, "kanji" | "half-num")
+        }
+
+        fn call(&self, call: &Call) -> Option<Vec<Value>> {
+            const ONES: [&str; 10] = ["", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
+            let text = match call.name {
+                "half-num" => call.source.to_owned(),
+                _ => match call.source.parse::<usize>().ok()? {
+                    n @ 1..=9 => ONES[n].to_owned(),
+                    n @ 10..=19 => format!("十{}", ONES[n - 10]),
+                    _ => return None,
+                },
+            };
+            Some(vec![text.into()])
+        }
+    }
+
+    #[test]
+    fn a_word_writing_the_number_of_its_reading_is_numbered() {
+        let numbered = word("さんだんかい", "三段階")
+            .unwrap()
+            .numbered(&Kanji)
+            .unwrap();
+        assert_eq!(numbered.reading(), "{kana}だんかい");
+        assert_eq!(numbered.surface(), "{kanji}段階");
+        assert_eq!(numbered.line(), "{kana}だんかい\t{kanji}段階");
+    }
+
+    #[test]
+    fn a_word_not_writing_its_numbers_or_with_placeholders_is_not_numbered() {
+        for (reading, surface) in [
+            ("さんま", "秋刀魚"),
+            ("{}こ", "{kanji}個"),
+            ("か*く", "書く"),
+        ] {
+            assert_eq!(
+                word(reading, surface).unwrap().numbered(&Kanji),
+                None,
+                "{reading}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_numeric_word_shows_what_it_gives_for_a_few_numbers() {
+        let numbered = word("{kana}だんかい", "{kanji}段階").unwrap();
+        assert_eq!(numbered.samples(&Kanji), ["一段階", "三段階", "十二段階"]);
+        assert_eq!(
+            word("さんま", "秋刀魚").unwrap().samples(&Kanji),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

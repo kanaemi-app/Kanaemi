@@ -24,4 +24,18 @@ function number.each(digits, written)
 	return table.concat(out)
 end
 
+-- `digits` without its leading zeros, in ASCII digits with a comma between
+-- each group of three.
+function number.grouped(digits)
+	digits = number.significant(digits)
+	local out = {}
+	for at, digit in ipairs(digits) do
+		if at > 1 and (#digits - at + 1) % 3 == 0 then
+			table.insert(out, ",")
+		end
+		table.insert(out, number.ASCII[digit + 1])
+	end
+	return table.concat(out)
+end
+
 return number

@@ -77,6 +77,161 @@ fn a_surface_from_a_word_and_a_numeric_item_is_one_candidate() {
 }
 
 #[test]
+fn a_kana_placeholder_takes_a_number_typed_in_kana() {
+    let (e, _) = engine("{kana}だんかい\t{kanji}段階", "");
+    assert_eq!(surfaces(&e, "さんだんかい"), ["三段階"]);
+    assert_eq!(surfaces(&e, "じゅうにだんかい"), ["十二段階"]);
+}
+
+#[test]
+fn a_kana_placeholder_takes_a_number_whose_last_sound_doubles() {
+    let (e, _) = engine("{kana}しゅるい\t{kanji}種類", "");
+    for (reading, surface) in [
+        ("いっしゅるい", "一種類"),
+        ("いちしゅるい", "一種類"),
+        ("さんしゅるい", "三種類"),
+        ("ろっしゅるい", "六種類"),
+        ("はっしゅるい", "八種類"),
+        ("じゅっしゅるい", "十種類"),
+        ("じっしゅるい", "十種類"),
+    ] {
+        assert_eq!(surfaces(&e, reading), [surface], "{reading}");
+    }
+}
+
+#[test]
+fn a_placeholder_typed_for_a_number_whose_last_sound_doubles_takes_every_number() {
+    let (mut e, lines) = engine("", "");
+    e.register("いっしゅるい", "{kanji}種類");
+    assert_eq!(*lines.0.borrow(), ["{kana}しゅるい\t{kanji}種類"]);
+    assert_eq!(surfaces(&e, "ごしゅるい"), ["五種類"]);
+}
+
+#[test]
+fn a_kana_number_reaches_functions_as_digits() {
+    let (e, _) = engine("{kana}こ\t{}個", "");
+    assert_eq!(surfaces(&e, "ろっこ"), ["6個"]);
+}
+
+#[test]
+fn a_digit_placeholder_takes_no_kana_number_nor_a_kana_one_digits() {
+    let (e, _) = engine("{}こ\t{kanji}個\n{kana}だんかい\t{kanji}段階", "");
+    assert_eq!(surfaces(&e, "さんこ"), Vec::<String>::new());
+    assert_eq!(surfaces(&e, "３だんかい"), Vec::<String>::new());
+}
+
+#[test]
+fn a_reading_may_hold_both_kinds_of_number() {
+    let (e, _) = engine("{}がつ{kana}にち\t{kanji}月{kanji}日", "");
+    assert_eq!(surfaces(&e, "１がつさんにち"), ["一月三日"]);
+}
+
+#[test]
+fn an_unknown_reading_placeholder_makes_the_line_invalid() {
+    let (_, invalid) = TextDictionary::parse("{foo}こ\t{}個\n{kana}こ\t{}個\n");
+    assert_eq!(invalid.len(), 1, "{invalid:?}");
+}
+
+#[test]
+fn a_candidate_from_a_kana_number_comes_after_the_other_candidates_of_its_reading() {
+    let (e, _) = engine("ごかく\t互角", "{kana}かく\t{kanji}角");
+    assert_eq!(surfaces(&e, "ごかく"), ["互角", "五角"]);
+}
+
+#[test]
+fn a_candidate_from_digits_keeps_the_place_its_dictionary_gives_it() {
+    let (e, _) = engine("５かく\t五画", "{}かく\t{kanji}角");
+    assert_eq!(surfaces(&e, "５かく"), ["五角", "五画"]);
+}
+
+#[test]
+fn picks_of_kana_numeric_candidates_are_recorded_with_their_placeholders() {
+    let (mut e, _) = engine("{kana}だんかい\t{kanji}段階", "");
+    e.commit("さんだんかい", "三段階");
+    let text = e.take_selections().unwrap().to_text();
+    assert!(text.contains("\n{kana}だんかい\t{kanji}段階\t"), "{text}");
+}
+
+#[test]
+fn each_value_of_a_function_is_a_candidate_in_the_order_given() {
+    let (e, _) = engine("{}こ\t{num}個", "");
+    assert_eq!(surfaces(&e, "1こ"), ["1個", "１個", "一個"]);
+    let (e, _) = engine("{}こ\t{num kanji wide}個", "");
+    assert_eq!(surfaces(&e, "1こ"), ["一個", "１個"]);
+}
+
+#[test]
+fn a_kana_number_is_written_each_way_from_one_line() {
+    let (e, _) = engine("{kana}だんかい\t{num}段階", "");
+    assert_eq!(surfaces(&e, "さんだんかい"), ["3段階", "３段階", "三段階"]);
+}
+
+#[test]
+fn the_value_picked_is_recorded_by_its_way_and_holds_for_any_number() {
+    let (mut e, _) = engine("{}こ\t{num}個", "");
+    e.commit("1こ", "一個");
+    assert_eq!(surfaces(&e, "２こ")[0], "二個");
+    let text = e.take_selections().unwrap().to_text();
+    assert!(text.contains("\n{}こ\t{num kanji}個\t"), "{text}");
+}
+
+#[test]
+fn deleting_one_value_hides_that_way_only() {
+    let (mut e, lines) = engine("{}こ\t{num}個", "");
+    e.delete("1こ", "１個");
+    assert_eq!(*lines.0.borrow(), ["!{}こ\t{num wide}個"]);
+    assert_eq!(surfaces(&e, "2こ"), ["2個", "二個"]);
+}
+
+#[test]
+fn a_word_writing_the_number_of_its_reading_is_registered_as_typed() {
+    let cases = [
+        ("さんだんかい", "三段階"),
+        ("いっしょ", "一緒"),
+        ("きゅうしゅう", "九州"),
+        ("さんま", "秋刀魚"),
+    ];
+    for (reading, surface) in cases {
+        let (mut e, lines) = engine("", "");
+        e.register(reading, surface);
+        let line = format!("{reading}\t{surface}");
+        assert_eq!(*lines.0.borrow(), [line], "{reading} {surface}");
+        assert_eq!(surfaces(&e, reading), [surface], "{reading} {surface}");
+    }
+}
+
+#[test]
+fn a_word_registered_as_typed_comes_for_no_other_number() {
+    let (mut e, _) = engine("", "");
+    e.register("いっしょ", "一緒");
+    assert_eq!(surfaces(&e, "にしょ"), Vec::<String>::new());
+}
+
+#[test]
+fn a_placeholder_typed_in_a_kana_numbered_word_takes_the_kana_number() {
+    let (mut e, lines) = engine("", "");
+    e.register("さんだんかい", "{kanji}段階");
+    assert_eq!(*lines.0.borrow(), ["{kana}だんかい\t{kanji}段階"]);
+}
+
+#[test]
+fn a_placeholder_typed_in_a_word_with_digits_and_kana_numbers_takes_both() {
+    let (mut e, lines) = engine("", "");
+    e.register("１がつさんにち", "{kanji}月{kanji}日");
+    assert_eq!(*lines.0.borrow(), ["{}がつ{kana}にち\t{kanji}月{kanji}日"]);
+}
+
+#[test]
+fn a_word_registered_from_a_kana_number_enters_the_field_as_typed() {
+    let (e, _) = engine("", "");
+    assert_eq!(e.registered_text("さんだんかい", None, "三段階"), "三段階");
+    assert_eq!(
+        e.registered_text("さんだんかい", None, "{kanji}段階"),
+        "三段階"
+    );
+}
+
+#[test]
 fn okurigana_leaves_numeric_items_out() {
     let (e, _) = engine("{}こ\t{}こ", "");
     assert_eq!(e.convert("１こ", Some("こ")), []);

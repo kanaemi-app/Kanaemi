@@ -12,10 +12,41 @@ pub(crate) const CLOSE: char = '\u{FDD1}';
 pub trait Functions {
     fn has(&self, name: &str) -> bool;
 
-    /// The text the function fills a placeholder with; `None` when it fails
-    /// or gives none.
-    fn call(&self, call: &Call) -> Option<String>;
+    /// The values the function fills a placeholder with, each a candidate of
+    /// its own; `None` or none when it fails or gives none.
+    fn call(&self, call: &Call) -> Option<Vec<Value>>;
 }
+
+/// One value a function fills a placeholder with.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Value {
+    pub text: String,
+    /// The argument the function gives this value alone for, which names the
+    /// item the value's records go to.
+    pub argument: Option<String>,
+}
+
+impl From<String> for Value {
+    fn from(text: String) -> Self {
+        Self {
+            text,
+            argument: None,
+        }
+    }
+}
+
+/// A surface filled with one value for each placeholder.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct Filled {
+    pub(crate) text: String,
+    /// The surface the records of this candidate go to: the item's, with each
+    /// placeholder whose value has an argument called with it.
+    pub(crate) surface: String,
+}
+
+/// At most this many candidates are filled from one item, however many values
+/// its placeholders' functions give.
+const MAX_FILLED: usize = 64;
 
 /// One call of a function, to fill one placeholder.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,43 +140,108 @@ pub(crate) fn fits(surface: &str, numbers: usize) -> bool {
     })
 }
 
-/// `surface` with each placeholder filled by its function, given what it
-/// takes from `reading` and its `numbers`, as typed. `None` when a
-/// placeholder has nothing to take, or its function is missing or gives no
-/// text.
+/// `surface` filled with the first value of each placeholder's function; see
+/// [`fill_all`].
 pub(crate) fn fill(
     surface: &str,
     numbers: &[String],
     reading: &str,
     functions: Option<&dyn Functions>,
 ) -> Option<String> {
-    let mut out = String::new();
+    fill_all(surface, numbers, reading, functions)
+        .into_iter()
+        .next()
+        .map(|filled| filled.text)
+}
+
+/// `surface` filled with each value of each placeholder's function, given
+/// what it takes from `reading` and its `numbers`, as typed: every
+/// combination, the first placeholder's values varying slowest. None when a
+/// placeholder has nothing to take, or its function is missing or gives no
+/// value.
+pub(crate) fn fill_all(
+    surface: &str,
+    numbers: &[String],
+    reading: &str,
+    functions: Option<&dyn Functions>,
+) -> Vec<Filled> {
+    let mut filled = vec![Filled {
+        text: String::new(),
+        surface: String::new(),
+    }];
     let mut next = numbers.iter();
     let mut rest = surface;
     while let Some(open) = rest.find(OPEN) {
-        out.push_str(&rest[..open]);
+        let before = &rest[..open];
         let inside = &rest[open + OPEN.len_utf8()..];
-        let close = inside.find(CLOSE)?;
-        let placeholder = Placeholder::parse(&inside[..close])?;
+        let Some(close) = inside.find(CLOSE) else {
+            return Vec::new();
+        };
+        let written = &inside[..close];
+        let Some(placeholder) = Placeholder::parse(written) else {
+            return Vec::new();
+        };
         let source = match placeholder.position {
-            Position::Next => next.next()?,
-            Position::At(at) => numbers.get(at)?,
-            Position::Reading => reading,
+            Position::Next => next.next().map(String::as_str),
+            Position::At(at) => numbers.get(at).map(String::as_str),
+            Position::Reading => Some(reading),
+        };
+        let Some(source) = source else {
+            return Vec::new();
         };
         let call = Call {
             name: placeholder.name,
             source,
             argument: placeholder.argument,
         };
-        out.push_str(&match functions {
-            Some(functions) if functions.has(call.name) => functions.call(&call)?,
-            _ if call.name.is_empty() => call.source.to_owned(),
-            _ => return None,
-        });
+        let values = match functions {
+            Some(functions) if functions.has(call.name) => {
+                functions.call(&call).unwrap_or_default()
+            }
+            _ if call.name.is_empty() => vec![call.source.to_owned().into()],
+            _ => Vec::new(),
+        };
+        // One value is recorded by the item as written, as before functions
+        // could give more.
+        let several = values.len() > 1;
+        filled = filled
+            .into_iter()
+            .flat_map(|f| {
+                values.iter().map(move |value| {
+                    let called = match &value.argument {
+                        Some(argument) if several => placeholder.called_with(argument),
+                        _ => written.to_owned(),
+                    };
+                    Filled {
+                        text: format!("{}{before}{}", f.text, value.text),
+                        surface: format!("{}{before}{OPEN}{called}{CLOSE}", f.surface),
+                    }
+                })
+            })
+            .take(MAX_FILLED)
+            .collect();
+        if filled.is_empty() {
+            return filled;
+        }
         rest = &inside[close + CLOSE.len_utf8()..];
     }
-    out.push_str(rest);
-    Some(out)
+    for f in &mut filled {
+        f.text.push_str(rest);
+        f.surface.push_str(rest);
+    }
+    filled
+}
+
+impl Placeholder<'_> {
+    /// The placeholder written to call its function with `argument` instead.
+    fn called_with(&self, argument: &str) -> String {
+        let position = match self.position {
+            Position::Next => String::new(),
+            Position::At(at) => format!("{at}:"),
+            Position::Reading => "-:".to_owned(),
+        };
+        format!("{position}{} {argument}", self.name)
+    }
 }
 
 #[cfg(test)]
@@ -250,9 +346,11 @@ mod tests {
             matches!(name, "shout" | "kanji")
         }
 
-        fn call(&self, call: &Call) -> Option<String> {
+        fn call(&self, call: &Call) -> Option<Vec<Value>> {
             match call.name {
-                "shout" => Some(format!("{}{}", call.source, call.argument.unwrap_or("!"))),
+                "shout" => Some(vec![
+                    format!("{}{}", call.source, call.argument.unwrap_or("!")).into(),
+                ]),
                 _ => None,
             }
         }
@@ -279,5 +377,101 @@ mod tests {
     #[test]
     fn a_surface_without_placeholders_stays_as_written() {
         assert_eq!(fill("{個}", &[], "", None).as_deref(), Some("{個}"));
+    }
+
+    /// `ways` gives its source in each way its argument names, `a` and `b`,
+    /// each with its way as the argument that gives it alone; `both` gives the
+    /// two with no argument.
+    struct Ways;
+
+    impl Functions for Ways {
+        fn has(&self, name: &str) -> bool {
+            matches!(name, "ways" | "both")
+        }
+
+        fn call(&self, call: &Call) -> Option<Vec<Value>> {
+            let ways = call.argument.unwrap_or("a b");
+            let values = ways.split(' ').map(|way| Value {
+                text: format!("{}{way}", call.source),
+                argument: (call.name == "ways").then(|| way.to_owned()),
+            });
+            Some(values.collect())
+        }
+    }
+
+    #[test]
+    fn each_value_a_function_gives_fills_a_candidate_of_its_own() {
+        let filled = fill_all(
+            &format!("{}個", marked("ways")),
+            &["1".to_owned()],
+            "",
+            Some(&Ways),
+        );
+        let texts: Vec<_> = filled.iter().map(|f| f.text.as_str()).collect();
+        assert_eq!(texts, ["1a個", "1b個"]);
+    }
+
+    #[test]
+    fn a_value_is_recorded_by_the_placeholder_called_with_its_argument() {
+        let surface = format!("{}個{}", marked("ways"), marked("-:ways b"));
+        let filled = fill_all(&surface, &["1".to_owned()], "よみ", Some(&Ways));
+        let recorded: Vec<_> = filled.iter().map(|f| f.surface.as_str()).collect();
+        let a = format!("{}個{}", marked("ways a"), marked("-:ways b"));
+        let b = format!("{}個{}", marked("ways b"), marked("-:ways b"));
+        assert_eq!(recorded, [a, b]);
+    }
+
+    #[test]
+    fn a_value_without_an_argument_is_recorded_by_its_item() {
+        let surface = marked("both");
+        let filled = fill_all(&surface, &["1".to_owned()], "", Some(&Ways));
+        assert_eq!(filled.len(), 2);
+        assert!(filled.iter().all(|f| f.surface == surface));
+    }
+
+    #[test]
+    fn two_placeholders_of_several_values_give_every_pair() {
+        let surface = format!("{}月{}日", marked("ways"), marked("ways"));
+        let numbers = ["1".to_owned(), "2".to_owned()];
+        let texts: Vec<_> = fill_all(&surface, &numbers, "", Some(&Ways))
+            .into_iter()
+            .map(|f| f.text)
+            .collect();
+        assert_eq!(texts, ["1a月2a日", "1a月2b日", "1b月2a日", "1b月2b日"]);
+    }
+
+    #[test]
+    fn a_position_is_kept_where_the_placeholder_is_called_again() {
+        let filled = fill_all(
+            &marked("1:ways"),
+            &["1".to_owned(), "2".to_owned()],
+            "",
+            Some(&Ways),
+        );
+        assert_eq!(filled[0].surface, marked("1:ways a"));
+    }
+
+    #[test]
+    fn a_single_value_is_recorded_by_its_item_as_written() {
+        let surface = marked(":ways a");
+        let filled = fill_all(&surface, &["1".to_owned()], "", Some(&Ways));
+        assert_eq!(filled[0].surface, surface);
+    }
+
+    #[test]
+    fn a_function_giving_no_value_fills_nothing() {
+        struct Empty;
+        impl Functions for Empty {
+            fn has(&self, _: &str) -> bool {
+                true
+            }
+            fn call(&self, _: &Call) -> Option<Vec<Value>> {
+                Some(Vec::new())
+            }
+        }
+        assert_eq!(
+            fill_all(&marked("x"), &["1".to_owned()], "", Some(&Empty)),
+            []
+        );
     }
 }

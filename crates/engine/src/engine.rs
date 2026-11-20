@@ -7,13 +7,14 @@ use kanaemi_core::{Candidate, Converter, Effect};
 
 use crate::dictionary::okuri_lookup_by_head;
 use crate::explain::Trace;
-use crate::numeric::Numbers;
-use crate::placeholder::{Functions, OPEN, fill, fits};
+use crate::numeric::{Numbers, takes_kana};
+use crate::placeholder::{Functions, OPEN, fill, fill_all};
+use crate::registration::placeholder_registration;
 use crate::{
     CONTEXT_CHARS, CandidateFacts, ConjugationTable, Dictionary, DropReason, Explained,
     Explanation, HISTORY_LEN, ItemLine, LineSink, LookupKey, MAX_SUFFIX_KANA, OkuriHead,
     OriginItem, RankingInput, RankingModel, RuleGroup, Score, Selections, TextDictionary,
-    UserCustom, WriteError, mark_placeholders, nfc, okuri_row,
+    UserCustom, WriteError, nfc, okuri_row,
 };
 
 /// On a frequency scale (100 per factor of e) this ranks a built form after
@@ -143,6 +144,9 @@ struct Found {
     /// Split where the user marked the okurigana: made from an okurigana
     /// word, or from a conjugating stem reaching the mark.
     okuri: bool,
+    /// Its place among the candidates its item's functions filled, in the
+    /// order they gave their values; 0 for any other.
+    value: usize,
 }
 
 impl Found {
@@ -518,9 +522,12 @@ impl Engine {
     ) -> Vec<Found> {
         let mut all: Vec<Found> = Vec::new();
         let user = self.user.dictionary();
-        let numbers = match okurigana {
-            Some(_) => None,
-            None => Numbers::find(reading),
+        let numbers: Vec<Numbers> = match okurigana {
+            Some(_) => Vec::new(),
+            None => Numbers::find(reading)
+                .into_iter()
+                .chain(Numbers::kana(reading))
+                .collect(),
         };
         let functions = self.user_functions();
         for (priority, slot) in self.slots.iter().enumerate() {
@@ -533,7 +540,7 @@ impl Engine {
                 dictionary,
                 reading,
                 okurigana,
-                numbers.as_ref(),
+                &numbers,
                 functions,
                 &hidden,
                 trace.as_deref_mut(),
@@ -580,16 +587,37 @@ impl Engine {
         self.favor(reading, ranked, trace)
     }
 
+    /// Sorts by the model's score, or by the rules without a model, then puts
+    /// the candidates filled from kana numbers last.
+    fn rank(&self, reading: &str, all: Vec<Found>, trace: Option<&mut Trace>) -> Vec<Found> {
+        let (mut ranked, kana): (Vec<_>, Vec<_>) = self
+            .rank_all(reading, all, trace)
+            .into_iter()
+            .partition(|f| {
+                !f.facts
+                    .template
+                    .as_ref()
+                    .is_some_and(|(r, _)| takes_kana(r))
+            });
+        ranked.extend(kana);
+        ranked
+    }
+
     /// Sorts by the model's score; ties, and every candidate without a model,
     /// go by the rules.
-    fn rank(
+    fn rank_all(
         &self,
         reading: &str,
         mut all: Vec<Found>,
         mut trace: Option<&mut Trace>,
     ) -> Vec<Found> {
-        fn key(f: &Found) -> (usize, u32, &[u8]) {
-            (f.facts.dictionary, f.facts.cost, f.facts.surface.as_bytes())
+        fn key(f: &Found) -> (usize, u32, usize, &[u8]) {
+            (
+                f.facts.dictionary,
+                f.facts.cost,
+                f.value,
+                f.facts.surface.as_bytes(),
+            )
         }
         let tie = |a: &Found, b: &Found| key(a).cmp(&key(b));
         if let Some(model) = self.ranking_model() {
@@ -842,38 +870,8 @@ impl Converter for Engine {
     }
 }
 
-/// A word registered with placeholders, written as an item with them.
-struct PlaceholderRegistration {
-    /// With a placeholder in place of each number.
-    reading: String,
-    surface: String,
-    /// As typed.
-    numbers: Vec<String>,
-}
-
-/// `None` when `surface` has no placeholders, or would make an invalid line.
-fn placeholder_registration(
-    reading: &str,
-    okurigana: Option<&str>,
-    surface: &str,
-) -> Option<PlaceholderRegistration> {
-    if okurigana.is_some() {
-        return None;
-    }
-    let surface = mark_placeholders(surface)?;
-    let (reading, numbers) = match Numbers::find(reading) {
-        Some(found) => (found.reading, found.values),
-        None => (reading.to_owned(), Vec::new()),
-    };
-    fits(&surface, numbers.len()).then_some(PlaceholderRegistration {
-        reading,
-        surface,
-        numbers,
-    })
-}
-
-/// The candidates one dictionary gives for a reading, and for its `numbers`
-/// put in numeric items, merged by surface at the cheapest cost. An item
+/// The candidates one dictionary gives for a reading, and for each way its
+/// `numbers` are put in numeric items, merged by surface at the cheapest cost. An item
 /// whose recorded pair is `hidden` is left out before merging, so it takes no
 /// other item of its surface with it. Each item looked at, kept or left out,
 /// goes to `trace` while explaining.
@@ -881,7 +879,7 @@ fn found_in(
     dictionary: &dyn Dictionary,
     reading: &str,
     okurigana: Option<&str>,
-    numbers: Option<&Numbers>,
+    numbers: &[Numbers],
     functions: Option<&dyn Functions>,
     hidden: &dyn Fn(&str, &str) -> bool,
     mut trace: Option<&mut Trace>,
@@ -895,6 +893,7 @@ fn found_in(
                    built: bool,
                    template: Option<(String, String)>,
                    okuri: bool,
+                   value: usize,
                    item: &dyn Fn(&str) -> OriginItem| {
         let (recorded_reading, recorded_surface) = match &template {
             Some((reading, surface)) => (reading.as_str(), surface.as_str()),
@@ -920,6 +919,7 @@ fn found_in(
                     f.facts.cost = cost;
                     f.facts.built = built;
                     f.facts.template = template;
+                    f.value = value;
                 }
                 f.okuri |= okuri;
             }
@@ -932,6 +932,7 @@ fn found_in(
                     template,
                 },
                 okuri,
+                value,
             }),
         }
     };
@@ -974,6 +975,7 @@ fn found_in(
                 false,
                 None,
                 false,
+                0,
                 &item,
             );
         } else if okurigana.is_some()
@@ -987,21 +989,28 @@ fn found_in(
                 };
                 t.left_out(None, e.cost, placeholders(reading, &e.surface), reason);
             }
-        } else if let Some(surface) = fill(&e.surface, &[], reading, functions) {
-            let item = |_: &str| placeholders(reading, &e.surface);
-            let template = (reading.to_owned(), e.surface.clone());
-            add(
-                trace.as_deref_mut(),
-                nfc(&surface),
-                e.cost,
-                false,
-                Some(template),
-                false,
-                &item,
-            );
-        } else if let Some(t) = trace.as_deref_mut() {
-            let item = placeholders(reading, &e.surface);
-            t.left_out(None, e.cost, item, DropReason::NotFilled);
+        } else {
+            let filled = fill_all(&e.surface, &[], reading, functions);
+            if filled.is_empty()
+                && let Some(t) = trace.as_deref_mut()
+            {
+                let item = placeholders(reading, &e.surface);
+                t.left_out(None, e.cost, item, DropReason::NotFilled);
+            }
+            for (value, filled) in filled.into_iter().enumerate() {
+                let item = |_: &str| placeholders(reading, &e.surface);
+                let template = (reading.to_owned(), filled.surface);
+                add(
+                    trace.as_deref_mut(),
+                    nfc(&filled.text),
+                    e.cost,
+                    false,
+                    Some(template),
+                    false,
+                    value,
+                    &item,
+                );
+            }
         }
     }
     let table = ConjugationTable::builtin();
@@ -1030,6 +1039,7 @@ fn found_in(
                     None,
                     // With okurigana, the stem reaches the mark.
                     okurigana.is_some(),
+                    0,
                     &item,
                 );
             } else if let Some(t) = trace.as_deref_mut() {
@@ -1067,11 +1077,12 @@ fn found_in(
                 false,
                 None,
                 true,
+                0,
                 &item,
             );
         }
     }
-    if let Some(numbers) = numbers {
+    for numbers in numbers {
         let items = dictionary.lookup(&numbers.reading);
         if let Some(t) = trace.as_deref_mut() {
             t.looked_up(LookupKey::Reading(numbers.reading.clone()), items.len());
@@ -1085,25 +1096,25 @@ fn found_in(
                 }
                 continue;
             }
-            match fill(&e.surface, &numbers.values, reading, functions) {
-                Some(surface) => {
-                    let template = (numbers.reading.clone(), e.surface.clone());
-                    add(
-                        trace.as_deref_mut(),
-                        nfc(&surface),
-                        e.cost,
-                        false,
-                        Some(template),
-                        false,
-                        &item,
-                    );
-                }
-                None => {
-                    if let Some(t) = trace.as_deref_mut() {
-                        let item = placeholders(&numbers.reading, &e.surface);
-                        t.left_out(None, e.cost, item, DropReason::NotFilled);
-                    }
-                }
+            let filled = fill_all(&e.surface, &numbers.values, reading, functions);
+            if filled.is_empty()
+                && let Some(t) = trace.as_deref_mut()
+            {
+                let item = placeholders(&numbers.reading, &e.surface);
+                t.left_out(None, e.cost, item, DropReason::NotFilled);
+            }
+            for (value, filled) in filled.into_iter().enumerate() {
+                let template = (numbers.reading.clone(), filled.surface);
+                add(
+                    trace.as_deref_mut(),
+                    nfc(&filled.text),
+                    e.cost,
+                    false,
+                    Some(template),
+                    false,
+                    value,
+                    &item,
+                );
             }
         }
     }

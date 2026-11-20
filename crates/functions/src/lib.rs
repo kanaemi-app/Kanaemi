@@ -21,7 +21,7 @@ pub const EXTENSION: &str = "luau";
 /// The functions the IME has, and the modules they require, by their path:
 /// written as files of the functions folder would be, so they work copied
 /// there too. A file at the top gives a function of its name.
-const BUILTINS: [(&str, &str); 16] = [
+const BUILTINS: [(&str, &str); 17] = [
     (
         "wareki.luau",
         include_str!("../assets/functions/wareki.luau"),
@@ -64,6 +64,7 @@ const BUILTINS: [(&str, &str); 16] = [
         "grouped-num.luau",
         include_str!("../assets/functions/grouped-num.luau"),
     ),
+    ("num.luau", include_str!("../assets/functions/num.luau")),
     (
         "lib/number.luau",
         include_str!("../assets/functions/lib/number.luau"),
@@ -328,7 +329,7 @@ impl Functions for LuauFunctions {
         self.functions.contains_key(name)
     }
 
-    fn call(&self, call: &Call) -> Option<String> {
+    fn call(&self, call: &Call) -> Option<Vec<kanaemi_engine::Value>> {
         let function = self.functions.get(call.name)?;
         if self.too_long.borrow().get(call.name) == Some(&TIMES_TOO_LONG) {
             return None;
@@ -347,21 +348,63 @@ impl Functions for LuauFunctions {
             let _ = self.lua.gc_collect();
             return None;
         }
-        let text = match result {
+        let values = match result {
             Ok(Value::Nil) => return None,
-            Ok(Value::String(text)) => text.to_str().map(|text| text.to_owned()),
-            Ok(other) => Err(mlua::Error::runtime(format!(
-                "gave a {} instead of a string",
-                other.type_name()
-            ))),
+            Ok(value) => values(value),
             Err(error) => Err(error),
         };
         // Leftovers of a failed call go now, not at some later conversion.
-        if text.is_err() {
+        if values.is_err() {
             let _ = self.lua.gc_collect();
         }
-        text.map_err(|error| self.fail(call.name, error.to_string()))
+        values
+            .map_err(|error| self.fail(call.name, error.to_string()))
             .ok()
+            .filter(|values| !values.is_empty())
+    }
+}
+
+/// What a function gave, as the values it fills a placeholder with: a
+/// string, or a list of strings and of tables with a `text` and an
+/// `argument` that gives that text alone.
+///
+/// The texts together are held to [`MEMORY_LIMIT`]: a list may repeat one
+/// string, which Luau holds once but which is copied here for each entry.
+fn values(given: Value) -> mlua::Result<Vec<kanaemi_engine::Value>> {
+    let copied = std::cell::Cell::new(0usize);
+    let text = |value: &Value| -> mlua::Result<String> {
+        match value {
+            Value::String(text) => {
+                let text = text.to_str()?;
+                copied.set(copied.get() + text.len());
+                if copied.get() > MEMORY_LIMIT {
+                    return Err(mlua::Error::runtime(format!(
+                        "gave more than {MEMORY_LIMIT} bytes of text"
+                    )));
+                }
+                Ok(text.to_owned())
+            }
+            other => Err(mlua::Error::runtime(format!(
+                "gave a {} instead of a string",
+                other.type_name()
+            ))),
+        }
+    };
+    match given {
+        Value::Table(list) => list
+            .sequence_values::<Value>()
+            .map(|value| match value? {
+                Value::Table(value) => Ok(kanaemi_engine::Value {
+                    text: text(&value.raw_get::<Value>("text")?)?,
+                    argument: match value.raw_get::<Value>("argument")? {
+                        Value::Nil => None,
+                        argument => Some(text(&argument)?),
+                    },
+                }),
+                value => Ok(text(&value)?.into()),
+            })
+            .collect(),
+        value => Ok(vec![text(&value)?.into()]),
     }
 }
 

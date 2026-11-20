@@ -9,7 +9,7 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use kanaemi_core::Effect;
 use kanaemi_engine::{
-    Call, Dictionary, Engine, Functions, LineSink, RankingModel, open_dictionary,
+    Call, Dictionary, Engine, Functions, LineSink, RankingModel, Value, open_dictionary,
 };
 
 /// What the core would report, fed to an engine one effect at a time.
@@ -145,14 +145,39 @@ impl Notations {
     }
 }
 
+/// `num` gives the number in the ways its argument names (`half`, `wide`,
+/// `kanji`; all three without one), each with its way as its argument.
 impl Functions for Notations {
     fn has(&self, name: &str) -> bool {
-        matches!(name, "wide-num" | "kanji")
+        matches!(name, "wide-num" | "kanji" | "num")
     }
 
-    fn call(&self, call: &Call) -> Option<String> {
-        let digits: Vec<u32> = call
-            .source
+    fn call(&self, call: &Call) -> Option<Vec<Value>> {
+        if call.name != "num" {
+            return Some(vec![Self::write(call.name, call.source)?.into()]);
+        }
+        call.argument
+            .unwrap_or("half wide kanji")
+            .split(' ')
+            .map(|way| {
+                let text = match way {
+                    "half" => Some(call.source.to_owned()),
+                    "wide" => Self::write("wide-num", call.source),
+                    "kanji" => Self::write("kanji", call.source),
+                    _ => None,
+                }?;
+                Some(Value {
+                    text,
+                    argument: Some(way.to_owned()),
+                })
+            })
+            .collect()
+    }
+}
+
+impl Notations {
+    fn write(name: &str, source: &str) -> Option<String> {
+        let digits: Vec<u32> = source
             .chars()
             .map(|c| match c {
                 '0'..='9' => Some(u32::from(c) - u32::from('0')),
@@ -161,7 +186,7 @@ impl Functions for Notations {
             })
             .collect::<Option<_>>()?;
         const KANJI: [&str; 10] = ["〇", "一", "二", "三", "四", "五", "六", "七", "八", "九"];
-        match call.name {
+        match name {
             "wide-num" => digits
                 .iter()
                 .map(|&d| char::from_u32(u32::from('０') + d))

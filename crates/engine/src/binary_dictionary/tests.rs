@@ -411,6 +411,16 @@ fn a_numeric_item_holds_its_placeholders_as_noncharacters() {
 }
 
 #[test]
+fn a_kana_placeholder_keeps_its_name_in_the_reading() {
+    let (text, invalid) = TextDictionary::parse("{kana}だんかい\t{kanji}段階");
+    assert_eq!(invalid, []);
+    let binary = BinaryDictionary::from_bytes(encode(&text, None)).unwrap();
+    let reading = "\u{FDD0}kana\u{FDD1}だんかい";
+    assert_eq!(binary.words(reading), text.words(reading));
+    assert_eq!(binary.words(reading).len(), 1);
+}
+
+#[test]
 fn an_index_with_more_keys_than_entries_is_rejected() {
     let parts = sections(&encode(&text(), None));
     let entries = parts.iter().find(|(k, _)| *k == ENTRIES).unwrap().1.len() / ENTRY_LEN;
