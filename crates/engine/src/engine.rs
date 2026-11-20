@@ -7,7 +7,7 @@ use kanaemi_core::{Candidate, Converter, Effect};
 
 use crate::dictionary::okuri_lookup_by_head;
 use crate::explain::Trace;
-use crate::numeric::Numbers;
+use crate::numeric::{Numbers, takes_kana};
 use crate::placeholder::{Functions, OPEN, fill, fits};
 use crate::{
     CONTEXT_CHARS, CandidateFacts, ConjugationTable, Dictionary, DropReason, Explained,
@@ -583,9 +583,20 @@ impl Engine {
         self.favor(reading, ranked, trace)
     }
 
+    /// Sorts by the model's score, or by the rules without a model, then puts
+    /// the candidates filled from kana numbers last.
+    fn rank(&self, reading: &str, all: Vec<Found>, trace: Option<&mut Trace>) -> Vec<Found> {
+        let (mut ranked, kana): (Vec<_>, Vec<_>) = self
+            .rank_all(reading, all, trace)
+            .into_iter()
+            .partition(|f| !f.facts.template.as_ref().is_some_and(|(r, _)| takes_kana(r)));
+        ranked.extend(kana);
+        ranked
+    }
+
     /// Sorts by the model's score; ties, and every candidate without a model,
     /// go by the rules.
-    fn rank(
+    fn rank_all(
         &self,
         reading: &str,
         mut all: Vec<Found>,

@@ -41,6 +41,11 @@ fn is_digit(c: char) -> bool {
 /// The name of a reading's placeholder that takes a number typed in kana.
 pub(crate) const KANA: &str = "kana";
 
+/// Whether an item's `reading` has a placeholder that takes a kana number.
+pub(crate) fn takes_kana(reading: &str) -> bool {
+    reading.contains(&format!("{OPEN}{KANA}{CLOSE}"))
+}
+
 /// Past each way with one kana number, at most this many readings in all are
 /// looked up for a reading's kana numbers: a reading full of kana that read
 /// as numbers (し, く, に) would otherwise be looked up in every dictionary

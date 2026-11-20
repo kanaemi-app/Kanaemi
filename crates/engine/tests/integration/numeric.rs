@@ -109,6 +109,18 @@ fn an_unknown_reading_placeholder_makes_the_line_invalid() {
 }
 
 #[test]
+fn a_candidate_from_a_kana_number_comes_after_the_other_candidates_of_its_reading() {
+    let (e, _) = engine("ごかく\t互角", "{kana}かく\t{kanji}角");
+    assert_eq!(surfaces(&e, "ごかく"), ["互角", "五角"]);
+}
+
+#[test]
+fn a_candidate_from_digits_keeps_the_place_its_dictionary_gives_it() {
+    let (e, _) = engine("５かく\t五画", "{}かく\t{kanji}角");
+    assert_eq!(surfaces(&e, "５かく"), ["五角", "五画"]);
+}
+
+#[test]
 fn picks_of_kana_numeric_candidates_are_recorded_with_their_placeholders() {
     let (mut e, _) = engine("{kana}だんかい\t{kanji}段階", "");
     e.commit("さんだんかい", "三段階");
