@@ -77,6 +77,46 @@ fn a_surface_from_a_word_and_a_numeric_item_is_one_candidate() {
 }
 
 #[test]
+fn a_kana_placeholder_takes_a_number_typed_in_kana() {
+    let (e, _) = engine("{kana}だんかい\t{kanji}段階", "");
+    assert_eq!(surfaces(&e, "さんだんかい"), ["三段階"]);
+    assert_eq!(surfaces(&e, "じゅうにだんかい"), ["十二段階"]);
+}
+
+#[test]
+fn a_kana_number_reaches_functions_as_digits() {
+    let (e, _) = engine("{kana}こ\t{}個", "");
+    assert_eq!(surfaces(&e, "ろっこ"), ["6個"]);
+}
+
+#[test]
+fn a_digit_placeholder_takes_no_kana_number_nor_a_kana_one_digits() {
+    let (e, _) = engine("{}こ\t{kanji}個\n{kana}だんかい\t{kanji}段階", "");
+    assert_eq!(surfaces(&e, "さんこ"), Vec::<String>::new());
+    assert_eq!(surfaces(&e, "３だんかい"), Vec::<String>::new());
+}
+
+#[test]
+fn a_reading_may_hold_both_kinds_of_number() {
+    let (e, _) = engine("{}がつ{kana}にち\t{kanji}月{kanji}日", "");
+    assert_eq!(surfaces(&e, "１がつさんにち"), ["一月三日"]);
+}
+
+#[test]
+fn an_unknown_reading_placeholder_makes_the_line_invalid() {
+    let (_, invalid) = TextDictionary::parse("{foo}こ\t{}個\n{kana}こ\t{}個\n");
+    assert_eq!(invalid.len(), 1, "{invalid:?}");
+}
+
+#[test]
+fn picks_of_kana_numeric_candidates_are_recorded_with_their_placeholders() {
+    let (mut e, _) = engine("{kana}だんかい\t{kanji}段階", "");
+    e.commit("さんだんかい", "三段階");
+    let text = e.take_selections().unwrap().to_text();
+    assert!(text.contains("\n{kana}だんかい\t{kanji}段階\t"), "{text}");
+}
+
+#[test]
 fn okurigana_leaves_numeric_items_out() {
     let (e, _) = engine("{}こ\t{}こ", "");
     assert_eq!(e.convert("１こ", Some("こ")), []);

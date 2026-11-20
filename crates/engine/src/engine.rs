@@ -518,9 +518,12 @@ impl Engine {
     ) -> Vec<Found> {
         let mut all: Vec<Found> = Vec::new();
         let user = self.user.dictionary();
-        let numbers = match okurigana {
-            Some(_) => None,
-            None => Numbers::find(reading),
+        let numbers: Vec<Numbers> = match okurigana {
+            Some(_) => Vec::new(),
+            None => Numbers::find(reading)
+                .into_iter()
+                .chain(Numbers::kana(reading))
+                .collect(),
         };
         let functions = self.user_functions();
         for (priority, slot) in self.slots.iter().enumerate() {
@@ -533,7 +536,7 @@ impl Engine {
                 dictionary,
                 reading,
                 okurigana,
-                numbers.as_ref(),
+                &numbers,
                 functions,
                 &hidden,
                 trace.as_deref_mut(),
@@ -872,8 +875,8 @@ fn placeholder_registration(
     })
 }
 
-/// The candidates one dictionary gives for a reading, and for its `numbers`
-/// put in numeric items, merged by surface at the cheapest cost. An item
+/// The candidates one dictionary gives for a reading, and for each way its
+/// `numbers` are put in numeric items, merged by surface at the cheapest cost. An item
 /// whose recorded pair is `hidden` is left out before merging, so it takes no
 /// other item of its surface with it. Each item looked at, kept or left out,
 /// goes to `trace` while explaining.
@@ -881,7 +884,7 @@ fn found_in(
     dictionary: &dyn Dictionary,
     reading: &str,
     okurigana: Option<&str>,
-    numbers: Option<&Numbers>,
+    numbers: &[Numbers],
     functions: Option<&dyn Functions>,
     hidden: &dyn Fn(&str, &str) -> bool,
     mut trace: Option<&mut Trace>,
@@ -1071,7 +1074,7 @@ fn found_in(
             );
         }
     }
-    if let Some(numbers) = numbers {
+    for numbers in numbers {
         let items = dictionary.lookup(&numbers.reading);
         if let Some(t) = trace.as_deref_mut() {
             t.looked_up(LookupKey::Reading(numbers.reading.clone()), items.len());
