@@ -500,6 +500,8 @@ table.bindings tr + tr td { border-top: 1px solid var(--separator); }
 
 /* A word of the user dictionary: its reading and surface side by side. */
 .word-form .binding-form-row { align-items: flex-start; }
+.word-form .word-numbered { color: var(--muted); font-size: 13px; margin: 8px 0 0; }
+.word-form .os-choice { margin-top: 6px; }
 .word-field { flex: 1; display: flex; flex-direction: column; gap: 4px; min-width: 180px; }
 .word-field > span { font-size: 12px; color: var(--muted); }
 

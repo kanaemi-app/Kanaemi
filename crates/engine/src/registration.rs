@@ -1,7 +1,8 @@
-//! The item a word registered with placeholders is written as.
+//! The item a word registered with placeholders is written as, and the one a
+//! word writing the numbers of its reading would be with them.
 
 use crate::numeric::Numbers;
-use crate::placeholder::{CLOSE, OPEN, fits};
+use crate::placeholder::{CLOSE, Call, Functions, OPEN, fits};
 use crate::text_dictionary::mark_placeholders;
 
 /// A word registered with placeholders, written as an item with them.
@@ -56,11 +57,70 @@ pub(crate) fn placeholder_registration(
     })
 }
 
+/// The functions that write a number one way, which a word's numbers are
+/// looked for in, the one to pick first where two write it the same (三 is
+/// both `kanji` and `kanji-num`).
+const NUMBER_WAYS: [&str; 6] = [
+    "half-num",
+    "wide-num",
+    "kanji",
+    "kanji-num",
+    "daiji",
+    "grouped-num",
+];
+
+/// The numeric item a word of `reading` and `surface`, which has no
+/// placeholders, would be with each written number made the placeholder of
+/// its way; `None` unless the surface writes every number of the reading.
+pub(crate) fn numbered(
+    reading: &str,
+    surface: &str,
+    functions: &dyn Functions,
+) -> Option<PlaceholderRegistration> {
+    numbers_of(reading).into_iter().find_map(|numbers| {
+        let surface = written_numbers(surface, &numbers.values, functions)?;
+        Some(PlaceholderRegistration {
+            reading: numbers.reading,
+            surface,
+            numbers: numbers.values,
+        })
+    })
+}
+
+/// `surface` with each of `numbers`, in turn, made the placeholder of the
+/// first way of [`NUMBER_WAYS`] it is written in; `None` unless every number
+/// is found.
+fn written_numbers(surface: &str, numbers: &[String], functions: &dyn Functions) -> Option<String> {
+    let mut out = String::new();
+    let mut rest = surface;
+    for number in numbers {
+        let (at, way, text) = NUMBER_WAYS
+            .iter()
+            .filter(|way| functions.has(way))
+            .filter_map(|&way| {
+                let call = Call {
+                    name: way,
+                    source: number,
+                    argument: None,
+                };
+                let text = functions.call(&call)?.into_iter().next()?.text;
+                Some((rest.find(&text).filter(|_| !text.is_empty())?, way, text))
+            })
+            .min_by_key(|&(at, ..)| at)?;
+        out.push_str(&rest[..at]);
+        out.push(OPEN);
+        out.push_str(way);
+        out.push(CLOSE);
+        rest = &rest[at + text.len()..];
+    }
+    (!numbers.is_empty()).then(|| out + rest)
+}
+
 /// Each way a reading's numbers may be put as placeholders, the one that
 /// puts the most of the reading in numbers first, then the one with fewer
 /// numbers: digits as typed, and kana numbers read in full (十二 for
 /// じゅうに rather than 十 and 二).
-pub(crate) fn numbers_of(reading: &str) -> Vec<Numbers> {
+fn numbers_of(reading: &str) -> Vec<Numbers> {
     let mut ways: Vec<Numbers> = Numbers::find(reading)
         .into_iter()
         .chain(Numbers::kana(reading))

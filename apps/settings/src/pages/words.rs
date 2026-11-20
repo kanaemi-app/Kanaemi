@@ -4,8 +4,10 @@
 
 use std::collections::HashMap;
 
+use std::rc::Rc;
+
 use kanaemi_engine::{UserWord, add_user_word, edit_user_word, remove_user_word, user_words};
-use kanaemi_functions::builtin_sources;
+use kanaemi_functions::{LuauFunctions, builtin_sources};
 
 use super::dictionaries::in_background;
 use super::functions::function_files;
@@ -323,12 +325,43 @@ fn WordForm(
     let mut reading = use_signal(|| initial.0.clone());
     let mut surface = use_signal(|| initial.1.clone());
     let mut error = use_signal(|| None::<String>);
+    // Off until chosen: a word such as 一緒 for いっしょ writes a number
+    // without being one, and as a numeric item it would give 二緒 for にしょ.
+    let mut numbering = use_signal(|| false);
+    // Opened once for the form: it runs the functions to find the numbers a
+    // word writes and to show what a word with numbers gives.
+    let opened = use_hook({
+        let functions = functions.clone();
+        move || Rc::new(LuauFunctions::open(&functions))
+    });
+    let typed = UserWord::new(&reading(), &surface(), |name| {
+        has_function(&functions, name)
+    });
+    // Only a word added: one edited keeps the form its line has.
+    let numbered = match (&original, &typed) {
+        (None, Ok(word)) => word.numbered(opened.as_ref()),
+        _ => None,
+    };
+    let shown = match (&numbered, &typed) {
+        (Some(word), _) if numbering() => Some(word.clone()),
+        (_, Ok(word)) => Some(word.clone()),
+        _ => None,
+    };
+    let samples = shown
+        .as_ref()
+        .map(|word| word.samples(opened.as_ref()))
+        .unwrap_or_default()
+        .join("・");
     let save = {
         let original = original.clone();
+        let numbered = numbered.clone();
         move |_| {
-            let written = UserWord::new(&reading(), &surface(), |name| {
-                has_function(&functions, name)
-            })
+            let written = match (&numbered, numbering()) {
+                (Some(word), true) => Ok(word.clone()),
+                _ => UserWord::new(&reading(), &surface(), |name| {
+                    has_function(&functions, name)
+                }),
+            }
             .and_then(|word| match &original {
                 Some(old) => edit_user_word(&custom, old, &word),
                 None => add_user_word(&custom, &word),
@@ -365,6 +398,25 @@ fn WordForm(
                         oninput: move |e| surface.set(e.value()),
                     }
                 }
+            }
+            if let Some(word) = &numbered {
+                div { class: "os-choice",
+                    label {
+                        input {
+                            r#type: "checkbox",
+                            checked: numbering(),
+                            onchange: move |e| numbering.set(e.checked()),
+                        }
+                        "数を置き場所にして "
+                        code { "{word.reading()}" }
+                        "　"
+                        code { "{word.surface()}" }
+                        " として足す"
+                    }
+                }
+            }
+            if !samples.is_empty() {
+                p { class: "word-numbered", "候補の例：{samples}" }
             }
             if let Some(message) = error() {
                 p { class: "error", "{message}" }
