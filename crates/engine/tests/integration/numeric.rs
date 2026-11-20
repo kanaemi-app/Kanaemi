@@ -160,6 +160,54 @@ fn deleting_one_value_hides_that_way_only() {
 }
 
 #[test]
+fn a_word_writing_the_number_of_its_reading_is_registered_as_typed() {
+    let cases = [
+        ("さんだんかい", "三段階"),
+        ("いっしょ", "一緒"),
+        ("きゅうしゅう", "九州"),
+        ("さんま", "秋刀魚"),
+    ];
+    for (reading, surface) in cases {
+        let (mut e, lines) = engine("", "");
+        e.register(reading, surface);
+        let line = format!("{reading}\t{surface}");
+        assert_eq!(*lines.0.borrow(), [line], "{reading} {surface}");
+        assert_eq!(surfaces(&e, reading), [surface], "{reading} {surface}");
+    }
+}
+
+#[test]
+fn a_word_registered_as_typed_comes_for_no_other_number() {
+    let (mut e, _) = engine("", "");
+    e.register("いっしょ", "一緒");
+    assert_eq!(surfaces(&e, "にしょ"), Vec::<String>::new());
+}
+
+#[test]
+fn a_placeholder_typed_in_a_kana_numbered_word_takes_the_kana_number() {
+    let (mut e, lines) = engine("", "");
+    e.register("さんだんかい", "{kanji}段階");
+    assert_eq!(*lines.0.borrow(), ["{kana}だんかい\t{kanji}段階"]);
+}
+
+#[test]
+fn a_placeholder_typed_in_a_word_with_digits_and_kana_numbers_takes_both() {
+    let (mut e, lines) = engine("", "");
+    e.register("１がつさんにち", "{kanji}月{kanji}日");
+    assert_eq!(*lines.0.borrow(), ["{}がつ{kana}にち\t{kanji}月{kanji}日"]);
+}
+
+#[test]
+fn a_word_registered_from_a_kana_number_enters_the_field_as_typed() {
+    let (e, _) = engine("", "");
+    assert_eq!(e.registered_text("さんだんかい", None, "三段階"), "三段階");
+    assert_eq!(
+        e.registered_text("さんだんかい", None, "{kanji}段階"),
+        "三段階"
+    );
+}
+
+#[test]
 fn okurigana_leaves_numeric_items_out() {
     let (e, _) = engine("{}こ\t{}こ", "");
     assert_eq!(e.convert("１こ", Some("こ")), []);

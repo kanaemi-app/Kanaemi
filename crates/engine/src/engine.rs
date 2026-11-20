@@ -8,12 +8,13 @@ use kanaemi_core::{Candidate, Converter, Effect};
 use crate::dictionary::okuri_lookup_by_head;
 use crate::explain::Trace;
 use crate::numeric::{Numbers, takes_kana};
-use crate::placeholder::{Functions, OPEN, fill, fill_all, fits};
+use crate::placeholder::{Functions, OPEN, fill, fill_all};
+use crate::registration::placeholder_registration;
 use crate::{
     CONTEXT_CHARS, CandidateFacts, ConjugationTable, Dictionary, DropReason, Explained,
     Explanation, HISTORY_LEN, ItemLine, LineSink, LookupKey, MAX_SUFFIX_KANA, OkuriHead,
     OriginItem, RankingInput, RankingModel, RuleGroup, Score, Selections, TextDictionary,
-    UserCustom, WriteError, mark_placeholders, nfc, okuri_row,
+    UserCustom, WriteError, nfc, okuri_row,
 };
 
 /// On a frequency scale (100 per factor of e) this ranks a built form after
@@ -867,36 +868,6 @@ impl Converter for Engine {
         self.remember(&reading, facts);
         text
     }
-}
-
-/// A word registered with placeholders, written as an item with them.
-struct PlaceholderRegistration {
-    /// With a placeholder in place of each number.
-    reading: String,
-    surface: String,
-    /// As typed.
-    numbers: Vec<String>,
-}
-
-/// `None` when `surface` has no placeholders, or would make an invalid line.
-fn placeholder_registration(
-    reading: &str,
-    okurigana: Option<&str>,
-    surface: &str,
-) -> Option<PlaceholderRegistration> {
-    if okurigana.is_some() {
-        return None;
-    }
-    let surface = mark_placeholders(surface)?;
-    let (reading, numbers) = match Numbers::find(reading) {
-        Some(found) => (found.reading, found.values),
-        None => (reading.to_owned(), Vec::new()),
-    };
-    fits(&surface, numbers.len()).then_some(PlaceholderRegistration {
-        reading,
-        surface,
-        numbers,
-    })
 }
 
 /// The candidates one dictionary gives for a reading, and for each way its

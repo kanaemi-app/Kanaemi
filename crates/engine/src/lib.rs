@@ -13,6 +13,7 @@ mod okuri;
 mod other_ime;
 mod placeholder;
 mod ranking;
+mod registration;
 mod replace;
 mod selections;
 mod skk;
