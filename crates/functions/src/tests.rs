@@ -3,6 +3,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use super::*;
 
+type Given = kanaemi_engine::Value;
+
 /// A folder of its own for each test, emptied first.
 fn folder(files: &[(&str, &str)]) -> PathBuf {
     static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -31,11 +33,75 @@ fn call(
     source: &str,
     argument: Option<&str>,
 ) -> Option<String> {
+    match values(functions, name, source, argument)?.as_slice() {
+        [value] => Some(value.text.clone()),
+        values => panic!("{name} gave {values:?}, not one value"),
+    }
+}
+
+fn values(
+    functions: &LuauFunctions,
+    name: &str,
+    source: &str,
+    argument: Option<&str>,
+) -> Option<Vec<Given>> {
     functions.call(&Call {
         name,
         source,
         argument,
     })
+}
+
+#[test]
+fn a_function_may_give_a_list_of_values() {
+    let functions = open(&[(
+        "ways.luau",
+        r#"return function(source) return { source .. "a", { text = source .. "b", argument = "b" } } end"#,
+    )]);
+    assert_eq!(
+        values(&functions, "ways", "1", None),
+        Some(vec![
+            Given {
+                text: "1a".to_owned(),
+                argument: None
+            },
+            Given {
+                text: "1b".to_owned(),
+                argument: Some("b".to_owned())
+            },
+        ])
+    );
+}
+
+#[test]
+fn a_list_with_a_value_of_another_kind_fails() {
+    for list in [
+        "{ 1 }",
+        "{ {} }",
+        "{ { text = 1 } }",
+        r#"{ { text = "a", argument = 1 } }"#,
+    ] {
+        let source = format!("return function() return {list} end");
+        let functions = open(&[("bad.luau", source.as_str())]);
+        assert_eq!(values(&functions, "bad", "", None), None, "{list}");
+        assert_eq!(functions.take_errors().len(), 1, "{list}");
+    }
+}
+
+#[test]
+fn a_list_repeating_one_long_text_past_the_memory_limit_fails() {
+    let functions = open(&[(
+        "many.luau",
+        r#"return function() return table.create(1024, string.rep("x", 1024 * 1024)) end"#,
+    )]);
+    assert_eq!(values(&functions, "many", "", None), None);
+    assert_eq!(functions.take_errors().len(), 1);
+}
+
+#[test]
+fn an_empty_list_gives_no_value() {
+    let functions = open(&[("none.luau", "return function() return {} end")]);
+    assert_eq!(values(&functions, "none", "", None), None);
 }
 
 #[test]
@@ -619,15 +685,12 @@ fn the_builtin_files_work_copied_into_the_functions_folder() {
     let builtins = open(&[]);
     for name in builtin_names() {
         for source in ["0", "007", "12", "２０２６", "100010", "1111"] {
-            let copied = call(&functions, name, source, None);
-            assert!(copied.is_some() || call(&builtins, name, source, None).is_none());
+            let copied = values(&functions, name, source, None);
+            let builtin = || values(&builtins, name, source, None);
+            assert!(copied.is_some() || builtin().is_none());
             // A function of another value each time is only to give one.
-            if call(&builtins, name, source, None) == call(&builtins, name, source, None) {
-                assert_eq!(
-                    copied,
-                    call(&builtins, name, source, None),
-                    "{name} {source}"
-                );
+            if builtin() == builtin() {
+                assert_eq!(copied, builtin(), "{name} {source}");
             }
         }
     }

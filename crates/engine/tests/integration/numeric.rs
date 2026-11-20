@@ -129,6 +129,37 @@ fn picks_of_kana_numeric_candidates_are_recorded_with_their_placeholders() {
 }
 
 #[test]
+fn each_value_of_a_function_is_a_candidate_in_the_order_given() {
+    let (e, _) = engine("{}こ\t{num}個", "");
+    assert_eq!(surfaces(&e, "1こ"), ["1個", "１個", "一個"]);
+    let (e, _) = engine("{}こ\t{num kanji wide}個", "");
+    assert_eq!(surfaces(&e, "1こ"), ["一個", "１個"]);
+}
+
+#[test]
+fn a_kana_number_is_written_each_way_from_one_line() {
+    let (e, _) = engine("{kana}だんかい\t{num}段階", "");
+    assert_eq!(surfaces(&e, "さんだんかい"), ["3段階", "３段階", "三段階"]);
+}
+
+#[test]
+fn the_value_picked_is_recorded_by_its_way_and_holds_for_any_number() {
+    let (mut e, _) = engine("{}こ\t{num}個", "");
+    e.commit("1こ", "一個");
+    assert_eq!(surfaces(&e, "２こ")[0], "二個");
+    let text = e.take_selections().unwrap().to_text();
+    assert!(text.contains("\n{}こ\t{num kanji}個\t"), "{text}");
+}
+
+#[test]
+fn deleting_one_value_hides_that_way_only() {
+    let (mut e, lines) = engine("{}こ\t{num}個", "");
+    e.delete("1こ", "１個");
+    assert_eq!(*lines.0.borrow(), ["!{}こ\t{num wide}個"]);
+    assert_eq!(surfaces(&e, "2こ"), ["2個", "二個"]);
+}
+
+#[test]
 fn okurigana_leaves_numeric_items_out() {
     let (e, _) = engine("{}こ\t{}こ", "");
     assert_eq!(e.convert("１こ", Some("こ")), []);

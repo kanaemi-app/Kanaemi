@@ -2,7 +2,7 @@ use std::cell::Cell;
 use std::rc::Rc;
 
 use kanaemi_core::{Converter, Effect};
-use kanaemi_engine::{Call, Engine, Functions, Slot, TextDictionary};
+use kanaemi_engine::{Call, Engine, Functions, Slot, TextDictionary, Value};
 
 use crate::common::{Learn, Lines, dictionary};
 
@@ -18,8 +18,8 @@ impl Functions for Test {
         matches!(name, "count" | "echo" | "decomposed" | "kanji")
     }
 
-    fn call(&self, call: &Call) -> Option<String> {
-        match call.name {
+    fn call(&self, call: &Call) -> Option<Vec<Value>> {
+        let text = match call.name {
             "count" => {
                 self.counted.set(self.counted.get() + 1);
                 Some(self.counted.get().to_string())
@@ -31,7 +31,8 @@ impl Functions for Test {
                 call.argument.unwrap_or_default()
             )),
             _ => None,
-        }
+        }?;
+        Some(vec![text.into()])
     }
 }
 
