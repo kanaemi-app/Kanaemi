@@ -84,6 +84,30 @@ fn a_kana_placeholder_takes_a_number_typed_in_kana() {
 }
 
 #[test]
+fn a_kana_placeholder_takes_a_number_whose_last_sound_doubles() {
+    let (e, _) = engine("{kana}しゅるい\t{kanji}種類", "");
+    for (reading, surface) in [
+        ("いっしゅるい", "一種類"),
+        ("いちしゅるい", "一種類"),
+        ("さんしゅるい", "三種類"),
+        ("ろっしゅるい", "六種類"),
+        ("はっしゅるい", "八種類"),
+        ("じゅっしゅるい", "十種類"),
+        ("じっしゅるい", "十種類"),
+    ] {
+        assert_eq!(surfaces(&e, reading), [surface], "{reading}");
+    }
+}
+
+#[test]
+fn a_placeholder_typed_for_a_number_whose_last_sound_doubles_takes_every_number() {
+    let (mut e, lines) = engine("", "");
+    e.register("いっしゅるい", "{kanji}種類");
+    assert_eq!(*lines.0.borrow(), ["{kana}しゅるい\t{kanji}種類"]);
+    assert_eq!(surfaces(&e, "ごしゅるい"), ["五種類"]);
+}
+
+#[test]
 fn a_kana_number_reaches_functions_as_digits() {
     let (e, _) = engine("{kana}こ\t{}個", "");
     assert_eq!(surfaces(&e, "ろっこ"), ["6個"]);

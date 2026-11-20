@@ -556,6 +556,25 @@ mod tests {
     }
 
     #[test]
+    fn a_kana_number_whose_last_sound_doubles_is_written_in_each_way_num_gives() {
+        let dir = temp_dir("kana-num-doubled");
+        fs::write(
+            dir.join(DICTIONARY_DIR).join("words.tsv"),
+            "{kana}しゅるい\t{num}種類\n",
+        )
+        .unwrap();
+        let profile = Profile::open(&dir);
+        assert_eq!(
+            surfaces(&profile, "いっしゅるい"),
+            ["1種類", "１種類", "一種類"]
+        );
+        assert_eq!(
+            surfaces(&profile, "ろっぴゃくしゅるい"),
+            ["600種類", "６００種類", "六百種類"]
+        );
+    }
+
+    #[test]
     fn a_placeholder_registered_for_a_kana_number_takes_every_kana_number() {
         let dir = temp_dir("kana-register");
         let mut profile = Profile::open(&dir);
