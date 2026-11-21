@@ -150,12 +150,25 @@ struct Found {
 }
 
 impl Found {
-    /// Whether another way of making the same surface takes over its cost. A
-    /// split at the mark outranks a word of the whole reading at any cost:
-    /// that word's cost is for typing the reading unmarked.
-    fn yields_to(&self, cost: u32, okuri: bool) -> bool {
-        (okuri, Reverse(cost)) > (self.okuri, Reverse(self.facts.cost))
+    /// Whether another way of making the same surface, `kana_filled` or not,
+    /// takes over its cost and item. A split at the mark outranks a word of
+    /// the whole reading at any cost: that word's cost is for typing the
+    /// reading unmarked. Any other item outranks one filled from a kana
+    /// number at any cost: such a candidate goes after the others, and a
+    /// surface something else makes is not one only a kana number makes.
+    fn yields_to(&self, cost: u32, okuri: bool, kana_filled: bool) -> bool {
+        (okuri, !kana_filled, Reverse(cost))
+            > (self.okuri, !self.kana_filled(), Reverse(self.facts.cost))
     }
+
+    /// Whether it was filled from an item whose reading takes a kana number.
+    fn kana_filled(&self) -> bool {
+        kana_filled(self.facts.template.as_ref())
+    }
+}
+
+fn kana_filled(template: Option<&(String, String)>) -> bool {
+    template.is_some_and(|(reading, _)| takes_kana(reading))
 }
 
 impl Engine {
@@ -546,6 +559,18 @@ impl Engine {
                 trace.as_deref_mut(),
             ) {
                 match all.iter_mut().find(|a| a.facts.surface == f.facts.surface) {
+                    // A later dictionary's word makes what an earlier one
+                    // made only from a kana number, so the candidate does
+                    // not go after the others.
+                    Some(a) if a.kana_filled() && !f.kana_filled() => {
+                        if let Some(t) = trace.as_deref_mut() {
+                            t.taken_over(&f.facts.surface, priority);
+                            t.kept(&f.facts.surface);
+                        }
+                        f.facts.dictionary = priority;
+                        f.okuri |= a.okuri;
+                        *a = f;
+                    }
                     Some(a) => {
                         a.okuri |= f.okuri;
                         if let Some(t) = trace.as_deref_mut() {
@@ -593,12 +618,7 @@ impl Engine {
         let (mut ranked, kana): (Vec<_>, Vec<_>) = self
             .rank_all(reading, all, trace)
             .into_iter()
-            .partition(|f| {
-                !f.facts
-                    .template
-                    .as_ref()
-                    .is_some_and(|(r, _)| takes_kana(r))
-            });
+            .partition(|f| !f.kana_filled());
         ranked.extend(kana);
         ranked
     }
@@ -906,16 +926,17 @@ fn found_in(
             }
             return;
         }
+        let kana = kana_filled(template.as_ref());
         if let Some(t) = trace {
             let taken = found
                 .iter()
                 .find(|f| f.facts.surface == surface)
-                .is_none_or(|f| f.yields_to(cost, okuri));
+                .is_none_or(|f| f.yields_to(cost, okuri, kana));
             t.gathered(&surface, cost, item(&surface), taken);
         }
         match found.iter_mut().find(|f| f.facts.surface == surface) {
             Some(f) => {
-                if f.yields_to(cost, okuri) {
+                if f.yields_to(cost, okuri, kana) {
                     f.facts.cost = cost;
                     f.facts.built = built;
                     f.facts.template = template;
