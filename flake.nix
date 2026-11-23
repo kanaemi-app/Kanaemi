@@ -137,6 +137,21 @@
                   # The engine opens the settings app from beside itself.
                   install -Dm755 target/release/kanaemi-settings $lib/kanaemi-settings
                   install -Dm644 apps/macos/assets/logo/kanaemi-icon.svg $lib/kanaemi.svg
+                  install -Dm644 apps/macos/assets/logo/kanaemi-icon.svg \
+                    $out/share/icons/hicolor/scalable/apps/kanaemi.svg
+                  # StartupWMClass is the program name GTK takes from argv[0],
+                  # which the wrapper keeps; tao gives the window no app id.
+                  mkdir -p $out/share/applications
+                  cat > $out/share/applications/kanaemi-settings.desktop <<EOF
+                  [Desktop Entry]
+                  Type=Application
+                  Name=Kanaemi Settings
+                  Name[ja]=かなえみ設定
+                  Exec=$lib/kanaemi-settings
+                  Icon=kanaemi
+                  Categories=Settings;
+                  StartupWMClass=kanaemi-settings
+                  EOF
                   # Where NixOS finds the engines given to i18n.inputMethod.ibus.engines.
                   mkdir -p $out/share/ibus/component
                   substitute apps/ibus/kanaemi.xml $out/share/ibus/component/kanaemi.xml \
